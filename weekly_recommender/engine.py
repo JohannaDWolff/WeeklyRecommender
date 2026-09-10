@@ -91,6 +91,14 @@ def _negate(fact: str) -> str:
     return fact[1:] if fact.startswith("-") else f"-{fact}"
 
 
+def replacement_fact(old_fact: str, new_value: str) -> str:
+    """Rebuild `old_fact` (e.g. `dailygoal(7,creativity)`) with its trailing
+    argument swapped for `new_value` - every tracked fact is
+    `predicate(day, value)`, so only the value ever needs to change."""
+    symbol = clingo.parse_term(old_fact)
+    return f"{symbol.name}({symbol.arguments[0]},{new_value.strip()})"
+
+
 _NEG_PREFIX = "neg__"
 
 

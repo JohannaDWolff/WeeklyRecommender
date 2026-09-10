@@ -28,6 +28,7 @@ from engine import (
     RecommenderEngine,
     RemovableFact,
     RemovableRule,
+    replacement_fact,
 )
 
 COLORS = {
@@ -388,7 +389,7 @@ class App:
         if matching_fact is not None:
             self._offer_fact_removal(layout, "context", matching_fact)
         else:
-            self._offer_new_fact(layout, "context")
+            self._offer_new_fact(layout, "context", fact)
 
     def show_goal_problem(self, goal: str, day_number: int) -> None:
         layout = self._new_frame()
@@ -402,7 +403,7 @@ class App:
 
         explanation = self.engine.explain_goal(day_number, goal)
         if explanation is None:
-            self._offer_new_fact(layout, "goal")
+            self._offer_new_fact(layout, "goal", fact)
             return
 
         layout.muted("This is a direct result of the knowledge base:")
@@ -418,7 +419,7 @@ class App:
         if matching_fact is not None:
             self._offer_fact_removal(layout, "action", matching_fact)
         else:
-            self._offer_new_fact(layout, "action")
+            self._offer_new_fact(layout, "action", fact)
 
     def _show_rule_explanation(self, layout: RowLayout, explanation: Explanation) -> None:
         head, body = explanation.rule
@@ -449,22 +450,25 @@ class App:
                 self._offer_fact_removal(layout, category, fact)
                 return
         if symbol.name == "dailyaction":
-            self._offer_new_fact(layout, "action")
+            self._offer_new_fact(layout, "action", fact)
         else:
             layout.muted("This is a direct result of the knowledge base.")
 
-    def _offer_new_fact(self, layout: RowLayout, category: str) -> None:
+    def _offer_new_fact(self, layout: RowLayout, category: str, old_fact: str) -> None:
         """This wasn't entered as a fact and isn't a direct consequence of a
         hard rule either - it was filled in by a default rule, so there's
         nothing to remove. Offer to add a fact instead, the same way
-        `show_add_replacement_fact` does after a removal."""
+        `show_add_replacement_fact` does after a removal. The user only
+        needs to type the new value, not the whole fact - `replacement_fact`
+        rebuilds it around `old_fact`'s predicate and day."""
         layout.label("This value was filled in by default and can be changed.")
+        layout.muted(f"Currently: {old_fact}")
         layout.muted("What would you prefer instead?")
-        new_fact = StringVar()
-        layout.entry(new_fact, fill=True)
+        new_value = StringVar()
+        layout.entry(new_value, fill=True)
         layout.button(
             "Enter",
-            command=lambda: self.add_fact(category, new_fact.get()),
+            command=lambda: self.add_fact(category, replacement_fact(old_fact, new_value.get())),
             style="Accent.TButton",
         )
 
@@ -484,16 +488,17 @@ class App:
 
     def remove_fact(self, category: str, fact: str) -> None:
         self.engine.remove_fact(category, fact)
-        self._show(lambda: self.show_add_replacement_fact(category))
+        self._show(lambda: self.show_add_replacement_fact(category, fact))
 
-    def show_add_replacement_fact(self, category: str) -> None:
+    def show_add_replacement_fact(self, category: str, old_fact: str) -> None:
         layout = self._new_frame()
         layout.heading("Would you like to add a different fact instead?")
+        layout.muted(f"Replacing: {old_fact}")
 
-        new_fact = StringVar()
-        layout.entry(new_fact, fill=True)
+        new_value = StringVar()
+        layout.entry(new_value, fill=True)
         layout.button_pair(
-            ("Enter", lambda: self.add_fact(category, new_fact.get())),
+            ("Enter", lambda: self.add_fact(category, replacement_fact(old_fact, new_value.get()))),
             ("Skip", lambda: self._show(self.show_updated_recommendation)),
             left_style="Accent.TButton",
             fill=True,
