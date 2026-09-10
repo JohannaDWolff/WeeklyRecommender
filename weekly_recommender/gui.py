@@ -23,6 +23,7 @@ from engine import (
     EngineState,
     Explanation,
     Inconsistent,
+    PreferenceExplanation,
     ProposedFact,
     Recommendation,
     RecommenderEngine,
@@ -468,7 +469,9 @@ class App:
         layout.entry(new_value, fill=True)
         layout.button(
             "Enter",
-            command=lambda: self.add_fact(category, replacement_fact(old_fact, new_value.get())),
+            command=lambda: self.propose_replacement(
+                category, replacement_fact(old_fact, new_value.get())
+            ),
             style="Accent.TButton",
         )
 
@@ -503,6 +506,49 @@ class App:
             left_style="Accent.TButton",
             fill=True,
         )
+
+    def propose_replacement(self, category: str, fact: str) -> None:
+        """Entry point for replacing a default-filled value (`_offer_new_fact`).
+        If `fact` is already achievable at this stage, explain why it wasn't
+        chosen instead of adding it outright - see `show_preference_explanation`."""
+        explanation = self.engine.explain_preference(category, fact)
+        if explanation is not None:
+            self._show(lambda: self.show_preference_explanation(explanation))
+            return
+        self.add_fact(category, fact)
+
+    def show_preference_explanation(self, explanation: PreferenceExplanation) -> None:
+        layout = self._new_frame()
+        layout.heading(f"{explanation.fact} is possible, but wasn't chosen")
+        if explanation.tie:
+            layout.label(
+                "Nothing currently prefers one over the other - the current "
+                "pick was chosen arbitrarily."
+            )
+        else:
+            layout.label(
+                f"The current pick matches the preference "
+                f"`{explanation.current_preference}`, which outranks "
+                + (
+                    f"`{explanation.desired_preference}`."
+                    if explanation.desired_preference
+                    else "this value, which currently matches no preference at all."
+                )
+            )
+        layout.button(
+            "Prefer this instead",
+            command=lambda: self.prefer_and_update(explanation.category, explanation.fact),
+            style="Accent.TButton",
+        )
+        layout.button(
+            "Leave preferences unchanged, add it to the knowledge base instead",
+            command=lambda: self.add_fact(explanation.category, explanation.fact),
+        )
+        layout.button("Back", command=self._go_back)
+
+    def prefer_and_update(self, category: str, fact: str) -> None:
+        self.engine.prefer(category, fact)
+        self._show(self.show_updated_recommendation)
 
     def add_fact(self, category: str, fact: str) -> None:
         try:

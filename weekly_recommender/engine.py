@@ -12,7 +12,15 @@ from typing import NamedTuple
 import clingo
 
 import domain
-from solver import AnswerSet, rank_by_preference, render_rules, render_statements, solve
+from solver import (
+    AnswerSet,
+    parse_preferences,
+    preference_rank,
+    rank_by_preference,
+    render_rules,
+    render_statements,
+    solve,
+)
 
 
 class Recommendation(NamedTuple):
@@ -52,6 +60,19 @@ class RemovableRule(NamedTuple):
 ConflictOption = ProposedFact | RemovableFact | RemovableRule
 
 
+class PreferenceExplanation(NamedTuple):
+    """Why `fact` - true in one of this stage's own answer sets - wasn't
+    the one picked. `tie` means neither side actually won on preference:
+    the current pick only came out first because of arbitrary solver
+    ordering, not because it matched an earlier preference."""
+
+    category: str
+    fact: str
+    current_preference: str | None  # preference the chosen answer set matched, if any
+    desired_preference: str | None  # preference the best alternative matched, if any
+    tie: bool
+
+
 class EngineState(NamedTuple):
     """A snapshot of everything `RecommenderEngine` mutates, so the GUI's
     back button can restore it and undo whatever changes were made on the
@@ -61,10 +82,16 @@ class EngineState(NamedTuple):
     goal_facts: list[str]
     action_facts: list[str]
     hard_rules: list[tuple[str, str]]
+    context_preferences: list[str]
+    goal_preferences: list[str]
+    action_preferences: list[str]
     knowledge_solution: AnswerSet | None
     context_solution: AnswerSet | None
     goal_solution: AnswerSet | None
     action_solution: AnswerSet | None
+    context_answer_sets: list[AnswerSet]
+    goal_answer_sets: list[AnswerSet]
+    action_answer_sets: list[AnswerSet]
 
 
 class ConflictReport(NamedTuple):
@@ -135,11 +162,21 @@ class RecommenderEngine:
             domain.CONTEXT_KNOWLEDGE + domain.GOAL_KNOWLEDGE + domain.ACTION_KNOWLEDGE
         )
     )
+    context_preferences: list[str] = field(
+        default_factory=lambda: list(domain.CONTEXT_PREFERENCES)
+    )
+    goal_preferences: list[str] = field(default_factory=lambda: list(domain.GOAL_PREFERENCES))
+    action_preferences: list[str] = field(
+        default_factory=lambda: list(domain.ACTION_PREFERENCES)
+    )
 
     knowledge_solution: AnswerSet | None = field(default=None, init=False)
     context_solution: AnswerSet | None = field(default=None, init=False)
     goal_solution: AnswerSet | None = field(default=None, init=False)
     action_solution: AnswerSet | None = field(default=None, init=False)
+    context_answer_sets: list[AnswerSet] = field(default_factory=list, init=False)
+    goal_answer_sets: list[AnswerSet] = field(default_factory=list, init=False)
+    action_answer_sets: list[AnswerSet] = field(default_factory=list, init=False)
 
     # -- Snapshot/restore, for the GUI's back button to undo mutations -----
 
@@ -149,10 +186,16 @@ class RecommenderEngine:
             goal_facts=list(self.goal_facts),
             action_facts=list(self.action_facts),
             hard_rules=list(self.hard_rules),
+            context_preferences=list(self.context_preferences),
+            goal_preferences=list(self.goal_preferences),
+            action_preferences=list(self.action_preferences),
             knowledge_solution=self.knowledge_solution,
             context_solution=self.context_solution,
             goal_solution=self.goal_solution,
             action_solution=self.action_solution,
+            context_answer_sets=list(self.context_answer_sets),
+            goal_answer_sets=list(self.goal_answer_sets),
+            action_answer_sets=list(self.action_answer_sets),
         )
 
     def restore(self, state: EngineState) -> None:
@@ -160,10 +203,16 @@ class RecommenderEngine:
         self.goal_facts = list(state.goal_facts)
         self.action_facts = list(state.action_facts)
         self.hard_rules = list(state.hard_rules)
+        self.context_preferences = list(state.context_preferences)
+        self.goal_preferences = list(state.goal_preferences)
+        self.action_preferences = list(state.action_preferences)
         self.knowledge_solution = state.knowledge_solution
         self.context_solution = state.context_solution
         self.goal_solution = state.goal_solution
         self.action_solution = state.action_solution
+        self.context_answer_sets = list(state.context_answer_sets)
+        self.goal_answer_sets = list(state.goal_answer_sets)
+        self.action_answer_sets = list(state.action_answer_sets)
 
     # -- Stage 1: compile the static knowledge base (vocabulary + facts) ----
 
@@ -209,7 +258,8 @@ class RecommenderEngine:
         )
         if not context_sets:
             raise Inconsistent("No consistent context defaults.")
-        self.context_solution = rank_by_preference(context_sets, domain.CONTEXT_PREFERENCES)[0]
+        self.context_answer_sets = context_sets
+        self.context_solution = rank_by_preference(context_sets, self.context_preferences)[0]
 
         goal_sets = solve(
             self._hard_rules_text() + self.context_solution.as_program(),
@@ -217,7 +267,8 @@ class RecommenderEngine:
         )
         if not goal_sets:
             raise Inconsistent("No consistent goal defaults.")
-        self.goal_solution = rank_by_preference(goal_sets, domain.GOAL_PREFERENCES)[0]
+        self.goal_answer_sets = goal_sets
+        self.goal_solution = rank_by_preference(goal_sets, self.goal_preferences)[0]
 
         action_sets = solve(
             self._hard_rules_text() + self.goal_solution.as_program(),
@@ -225,7 +276,8 @@ class RecommenderEngine:
         )
         if not action_sets:
             raise Inconsistent("No consistent action defaults.")
-        ranked_action_sets = rank_by_preference(action_sets, domain.ACTION_PREFERENCES)
+        self.action_answer_sets = action_sets
+        ranked_action_sets = rank_by_preference(action_sets, self.action_preferences)
         self.action_solution = ranked_action_sets[0]
         return ranked_action_sets
 
@@ -318,6 +370,44 @@ class RecommenderEngine:
 
     def remove_rule(self, rule: tuple[str, str]) -> None:
         self.hard_rules.remove(rule)
+
+    # -- Explaining a default value that lost to preference ranking --------
+
+    def explain_preference(self, category: str, fact: str) -> PreferenceExplanation | None:
+        """If `fact` is already true in one of this stage's own answer sets,
+        explain why it wasn't the one chosen. Returns None if `fact` isn't
+        achievable at this stage at all (the caller should fall back to
+        `add_fact`)."""
+        symbol = clingo.parse_term(fact)
+        stage_answer_sets = getattr(self, f"{category}_answer_sets")
+        matching = [answer_set for answer_set in stage_answer_sets if symbol in answer_set]
+        if not matching:
+            return None
+
+        preferences = getattr(self, f"{category}_preferences")
+        parsed = parse_preferences(preferences)
+        desired = rank_by_preference(matching, preferences)[0]
+        desired_rank = preference_rank(desired, parsed)
+        current_solution = getattr(self, f"{category}_solution")
+        current_rank = preference_rank(current_solution, parsed)
+
+        return PreferenceExplanation(
+            category=category,
+            fact=fact,
+            current_preference=(
+                preferences[current_rank] if current_rank < len(preferences) else None
+            ),
+            desired_preference=(
+                preferences[desired_rank] if desired_rank < len(preferences) else None
+            ),
+            tie=(current_rank == desired_rank),
+        )
+
+    def prefer(self, category: str, fact: str) -> None:
+        """Give `fact` top priority in this stage's preferences, so the next
+        solve picks an answer set containing it (ties still resolved by
+        solver order - see `PreferenceExplanation.tie`)."""
+        getattr(self, f"{category}_preferences").insert(0, fact)
 
     # -- Editing the fact base -------------------------------------------
 

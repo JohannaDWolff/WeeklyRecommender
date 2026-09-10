@@ -65,6 +65,15 @@ def parse_preferences(preferences: Sequence[str]) -> list[clingo.Symbol]:
     return [clingo.parse_term(preference) for preference in preferences]
 
 
+def preference_rank(answer_set: AnswerSet, parsed_preferences: Sequence[clingo.Symbol]) -> int:
+    """Index of the first preference atom present in `answer_set`, or
+    len(parsed_preferences) if none match."""
+    for index, preference in enumerate(parsed_preferences):
+        if preference in answer_set:
+            return index
+    return len(parsed_preferences)
+
+
 def rank_by_preference(
     answer_sets: list[AnswerSet], preferences: Sequence[str]
 ) -> list[AnswerSet]:
@@ -72,11 +81,4 @@ def rank_by_preference(
     (by list position) comes first. Answer sets matching no preference sort
     last, in their original relative order (stable sort)."""
     parsed = parse_preferences(preferences)
-
-    def rank(answer_set: AnswerSet) -> int:
-        for index, preference in enumerate(parsed):
-            if preference in answer_set:
-                return index
-        return len(parsed)
-
-    return sorted(answer_sets, key=rank)
+    return sorted(answer_sets, key=lambda answer_set: preference_rank(answer_set, parsed))
