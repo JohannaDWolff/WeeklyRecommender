@@ -52,6 +52,21 @@ class RemovableRule(NamedTuple):
 ConflictOption = ProposedFact | RemovableFact | RemovableRule
 
 
+class EngineState(NamedTuple):
+    """A snapshot of everything `RecommenderEngine` mutates, so the GUI's
+    back button can restore it and undo whatever changes were made on the
+    screen it's leaving."""
+
+    context_facts: list[str]
+    goal_facts: list[str]
+    action_facts: list[str]
+    hard_rules: list[tuple[str, str]]
+    knowledge_solution: AnswerSet | None
+    context_solution: AnswerSet | None
+    goal_solution: AnswerSet | None
+    action_solution: AnswerSet | None
+
+
 class ConflictReport(NamedTuple):
     """Why `add_fact` failed, and every fact/rule whose removal would
     resolve it (always including the proposed fact itself, as a "don't add
@@ -117,6 +132,30 @@ class RecommenderEngine:
     context_solution: AnswerSet | None = field(default=None, init=False)
     goal_solution: AnswerSet | None = field(default=None, init=False)
     action_solution: AnswerSet | None = field(default=None, init=False)
+
+    # -- Snapshot/restore, for the GUI's back button to undo mutations -----
+
+    def snapshot(self) -> EngineState:
+        return EngineState(
+            context_facts=list(self.context_facts),
+            goal_facts=list(self.goal_facts),
+            action_facts=list(self.action_facts),
+            hard_rules=list(self.hard_rules),
+            knowledge_solution=self.knowledge_solution,
+            context_solution=self.context_solution,
+            goal_solution=self.goal_solution,
+            action_solution=self.action_solution,
+        )
+
+    def restore(self, state: EngineState) -> None:
+        self.context_facts = list(state.context_facts)
+        self.goal_facts = list(state.goal_facts)
+        self.action_facts = list(state.action_facts)
+        self.hard_rules = list(state.hard_rules)
+        self.knowledge_solution = state.knowledge_solution
+        self.context_solution = state.context_solution
+        self.goal_solution = state.goal_solution
+        self.action_solution = state.action_solution
 
     # -- Stage 1: compile the static knowledge base (vocabulary + facts) ----
 
@@ -217,26 +256,31 @@ class RecommenderEngine:
 
     def explain_goal(self, day_number: int, goal: str) -> Explanation | None:
         """Find the hard-knowledge rule of shape `dailygoal(D,G) :- ...`
-        that derives `dailygoal(day_number, goal)`, and resolve its
-        prerequisites against the action actually recommended for that
-        day *and* goal - not just any action that could achieve the goal
-        in general - so the explanation is consistent with what was
-        actually recommended. (Weekend days can have two actions, one per
-        goal, so matching on day alone isn't enough - it must also be one
-        that achieves this specific goal.)"""
+        that derives `dailygoal(day_number, goal)`, using only an action
+        already established *before* the goal-defaults stage (stage 3) ran
+        - i.e. present in `context_solution`, which reflects stage 1 (the
+        knowledge base: explicit facts + hard rules) and stage 2 (context
+        defaults) only. The action-defaults stage (4) runs *after* goals
+        are decided and typically picks an action *because of* the goal
+        already set in stage 3 - explaining the goal via that action would
+        be circular, so such actions (present only in `action_solution`,
+        not yet in `context_solution`) don't count as an explanation here.
+        (Weekend days can have two actions, one per goal, so matching on
+        day alone isn't enough - it must also be one that achieves this
+        specific goal.)"""
         fact = clingo.parse_term(f"dailygoal({day_number},{goal})")
 
-        if self.action_solution is None:
+        if self.context_solution is None:
             return None
 
         candidate_actions = {
             symbol.arguments[1]
-            for symbol in self.action_solution.matching("dailyaction", 2)
+            for symbol in self.context_solution.matching("dailyaction", 2)
             if symbol.positive and symbol.arguments[0] == clingo.Number(day_number)
         }
         actions_for_goal = {
             symbol.arguments[1]
-            for symbol in self.action_solution.matching("achieves", 2)
+            for symbol in self.context_solution.matching("achieves", 2)
             if symbol.positive and str(symbol.arguments[0]) == goal
         }
         action = next(iter(candidate_actions & actions_for_goal), None)
@@ -362,7 +406,7 @@ class RecommenderEngine:
             for target in (positive, negative):
                 rule = self._find_rule_for(target, program)
                 if rule is not None:
-                    lines.append(f"  - {target} from `{rule[0].strip()} :- {rule[1]}`")
+                    lines.append(f"  > {target} from `{rule[0].strip()} :- {rule[1]}`")
                     options.append(RemovableRule(rule))
 
         # De-duplicate while preserving order (the same rule can derive more

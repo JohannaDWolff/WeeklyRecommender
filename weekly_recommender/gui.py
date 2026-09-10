@@ -4,6 +4,12 @@ State (facts, rules, last solve results) lives in a RecommenderEngine
 instance owned by this App - no module-level globals. Widget placement goes
 through RowLayout so rows are always allocated dynamically: no two widgets
 can ever be handed the same fixed row number and end up overlapping.
+
+Visual language: a small ttk.Style palette (COLORS below) plus a handful of
+named styles configured once in `_configure_style`. `clam` is used as the
+base theme rather than the platform default because it's the only built-in
+ttk theme that actually honors custom button backgrounds/foregrounds on
+every platform - macOS's native "aqua" theme silently ignores them.
 """
 from __future__ import annotations
 
@@ -14,6 +20,7 @@ from typing import Callable
 import domain
 from engine import (
     ConflictOption,
+    EngineState,
     Explanation,
     Inconsistent,
     ProposedFact,
@@ -22,6 +29,126 @@ from engine import (
     RemovableFact,
     RemovableRule,
 )
+
+COLORS = {
+    "background": "#f5f6fa",
+    "surface": "#ffffff",
+    "text": "#1f2430",
+    "muted": "#6b7280",
+    "border": "#dde1ea",
+    "accent": "#2f6fed",
+    "accent_active": "#1f4fcc",
+    "success": "#1f9d55",
+    "success_active": "#167a42",
+    "danger": "#d9455f",
+    "danger_active": "#b7334a",
+}
+
+FONT_FAMILY = "Helvetica"
+
+
+def _configure_style(root: Tk) -> None:
+    root.configure(background=COLORS["background"])
+
+    style = ttk.Style(root)
+    style.theme_use("clam")
+
+    style.configure("TFrame", background=COLORS["background"])
+    style.configure(
+        "TLabel",
+        background=COLORS["background"],
+        foreground=COLORS["text"],
+        font=(FONT_FAMILY, 11),
+    )
+    style.configure(
+        "Heading.TLabel",
+        font=(FONT_FAMILY, 16, "bold"),
+        foreground=COLORS["text"],
+    )
+    style.configure(
+        "Section.TLabel",
+        font=(FONT_FAMILY, 11, "bold"),
+        foreground=COLORS["muted"],
+    )
+    style.configure(
+        "Muted.TLabel",
+        font=(FONT_FAMILY, 10),
+        foreground=COLORS["muted"],
+    )
+    style.configure(
+        "Warning.TLabel",
+        font=(FONT_FAMILY, 11, "bold"),
+        foreground=COLORS["danger"],
+    )
+    style.configure(
+        "Day.TLabel",
+        font=(FONT_FAMILY, 11, "bold"),
+        foreground=COLORS["text"],
+    )
+    style.configure(
+        "Success.TLabel",
+        font=(FONT_FAMILY, 12, "bold"),
+        foreground=COLORS["success"],
+    )
+
+    style.configure("TSeparator", background=COLORS["border"])
+
+    style.configure(
+        "TButton",
+        font=(FONT_FAMILY, 11),
+        padding=(10, 6),
+        background=COLORS["surface"],
+        foreground=COLORS["text"],
+        borderwidth=1,
+        relief="solid",
+    )
+    style.map(
+        "TButton",
+        background=[("active", COLORS["border"])],
+    )
+
+    style.configure(
+        "Accent.TButton",
+        font=(FONT_FAMILY, 11, "bold"),
+        foreground="white",
+        background=COLORS["accent"],
+        borderwidth=0,
+    )
+    style.map("Accent.TButton", background=[("active", COLORS["accent_active"])])
+
+    style.configure(
+        "Success.TButton",
+        font=(FONT_FAMILY, 11, "bold"),
+        foreground="white",
+        background=COLORS["success"],
+        borderwidth=0,
+    )
+    style.map("Success.TButton", background=[("active", COLORS["success_active"])])
+
+    style.configure(
+        "Danger.TButton",
+        font=(FONT_FAMILY, 11, "bold"),
+        foreground="white",
+        background=COLORS["danger"],
+        borderwidth=0,
+    )
+    style.map("Danger.TButton", background=[("active", COLORS["danger_active"])])
+
+    style.configure(
+        "Back.TButton",
+        font=(FONT_FAMILY, 10),
+        foreground=COLORS["muted"],
+        background=COLORS["background"],
+        padding=(4, 2),
+        borderwidth=0,
+    )
+    style.map("Back.TButton", foreground=[("active", COLORS["text"])])
+
+    style.configure(
+        "TEntry",
+        padding=(6, 4),
+        fieldbackground=COLORS["surface"],
+    )
 
 
 class RowLayout:
@@ -32,38 +159,90 @@ class RowLayout:
         self.frame = frame
         self.row = 0
 
-    def label(self, text: str, wraplength: int = 460) -> ttk.Label:
-        widget = ttk.Label(self.frame, text=text, wraplength=wraplength, justify="left")
-        widget.grid(column=1, row=self.row, sticky=(W, E))
+    def heading(self, text: str) -> ttk.Label:
+        widget = self.label(text, style="Heading.TLabel", pady=(0, 10))
+        self.separator()
+        return widget
+
+    def section(self, text: str) -> ttk.Label:
+        return self.label(text, style="Section.TLabel", pady=(10, 2))
+
+    def muted(self, text: str) -> ttk.Label:
+        return self.label(text, style="Muted.TLabel")
+
+    def warning(self, text: str) -> ttk.Label:
+        return self.label(text, style="Warning.TLabel", pady=(0, 6))
+
+    def separator(self) -> ttk.Separator:
+        widget = ttk.Separator(self.frame, orient="horizontal")
+        widget.grid(column=1, row=self.row, columnspan=2, sticky=(W, E), pady=(0, 10))
         self.row += 1
         return widget
 
-    def button(self, text: str, command: Callable[[], None] | None = None) -> ttk.Button:
-        widget = ttk.Button(self.frame, text=text, command=command)
-        widget.grid(column=1, row=self.row, sticky=W)
+    def label(
+        self,
+        text: str,
+        wraplength: int = 460,
+        style: str = "TLabel",
+        pady: tuple[int, int] = (0, 4),
+    ) -> ttk.Label:
+        widget = ttk.Label(self.frame, text=text, wraplength=wraplength, justify="left", style=style)
+        widget.grid(column=1, row=self.row, sticky=(W, E), pady=pady)
+        self.row += 1
+        return widget
+
+    def day_row(self, day_text: str, rest_text: str) -> ttk.Frame:
+        """A recommendation line with the day name in bold and the rest in
+        the regular body style, side by side."""
+        row_frame = ttk.Frame(self.frame)
+        row_frame.grid(column=1, row=self.row, sticky=(W, E), pady=(0, 4))
+        ttk.Label(row_frame, text=day_text, style="Day.TLabel").pack(side="left")
+        ttk.Label(row_frame, text=f" {rest_text}", style="TLabel").pack(side="left")
+        self.row += 1
+        return row_frame
+
+    def button(
+        self, text: str, command: Callable[[], None] | None = None, style: str = "TButton"
+    ) -> ttk.Button:
+        widget = ttk.Button(self.frame, text=text, command=command, style=style)
+        widget.grid(column=1, row=self.row, sticky=W, pady=(0, 4))
         self.row += 1
         return widget
 
     def button_pair(
-        self, left: tuple[str, Callable[[], None] | None], right: tuple[str, Callable[[], None] | None]
+        self,
+        left: tuple[str, Callable[[], None] | None],
+        right: tuple[str, Callable[[], None] | None],
+        left_style: str = "TButton",
+        right_style: str = "TButton",
+        fill: bool = False,
     ) -> tuple[ttk.Button, ttk.Button]:
-        """Two buttons side by side on the same row."""
-        left_widget = ttk.Button(self.frame, text=left[0], command=left[1])
-        left_widget.grid(column=1, row=self.row, sticky=W)
-        right_widget = ttk.Button(self.frame, text=right[0], command=right[1])
-        right_widget.grid(column=2, row=self.row, sticky=W)
+        """Two buttons side by side on the same row. With `fill`, the right
+        button is pinned to column 2's right edge instead of left-aligned
+        right after column 1 - used to line the pair up with a `fill`
+        entry above it, whose columnspan=2 sets column 2's width to
+        whatever's needed to reach the entry's right edge."""
+        if fill:
+            self.frame.columnconfigure(2, weight=1)
+        left_widget = ttk.Button(self.frame, text=left[0], command=left[1], style=left_style)
+        left_widget.grid(column=1, row=self.row, sticky=W, pady=(0, 4))
+        right_widget = ttk.Button(self.frame, text=right[0], command=right[1], style=right_style)
+        right_widget.grid(column=2, row=self.row, sticky=(E if fill else W), pady=(0, 4))
         self.row += 1
         return left_widget, right_widget
 
-    def label_var(self, textvariable: StringVar) -> ttk.Label:
-        widget = ttk.Label(self.frame, textvariable=textvariable)
-        widget.grid(column=1, row=self.row, sticky=(W, E))
+    def label_var(self, textvariable: StringVar, style: str = "Success.TLabel") -> ttk.Label:
+        widget = ttk.Label(self.frame, textvariable=textvariable, style=style)
+        widget.grid(column=1, row=self.row, sticky=(W, E), pady=(6, 0))
         self.row += 1
         return widget
 
-    def entry(self, textvariable: StringVar, width: int = 81) -> ttk.Entry:
+    def entry(self, textvariable: StringVar, width: int = 81, fill: bool = False) -> ttk.Entry:
         widget = ttk.Entry(self.frame, width=width, textvariable=textvariable)
-        widget.grid(column=1, row=self.row, sticky=W)
+        if fill:
+            widget.grid(column=1, row=self.row, columnspan=2, sticky=(W, E), pady=(0, 4))
+        else:
+            widget.grid(column=1, row=self.row, sticky=W, pady=(0, 4))
         self.row += 1
         return widget
 
@@ -75,11 +254,14 @@ class App:
         self.root.title("Weekly Recommendations")
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
+        self.root.minsize(560, 420)
+        _configure_style(self.root)
 
         self.current_frame: ttk.Frame | None = None
         self.layout: RowLayout | None = None
-        self._history: list[Callable[[], None]] = []
+        self._history: list[tuple[Callable[[], None], EngineState]] = []
         self._current_render: Callable[[], None] | None = None
+        self._current_snapshot: EngineState | None = None
         self._show(lambda: self.show_recommendations(self.engine.recommend()))
 
     def run(self) -> None:
@@ -90,43 +272,50 @@ class App:
     # Every screen transition goes through `_show`, which always builds a
     # fresh frame (via `_new_frame`), so a screen's widgets never linger
     # once you've moved past it. `_show` pushes the render function that
-    # built the *previous* screen onto a history stack, and `_go_back`
-    # re-runs it - "undo" without needing separate state to reverse.
+    # built the *previous* screen, together with the engine state as it was
+    # when that screen was shown, onto a history stack. `_go_back` restores
+    # that engine state before re-running the render - so any fact/rule
+    # mutations made while on the screen being left (e.g. removing a fact,
+    # then backing out of the follow-up screen) are undone, not just the
+    # navigation itself.
 
     def _show(self, render: Callable[[], None]) -> None:
         if self._current_render is not None:
-            self._history.append(self._current_render)
+            self._history.append((self._current_render, self._current_snapshot))
+        self._current_snapshot = self.engine.snapshot()
         self._current_render = render
         render()
 
     def _go_back(self) -> None:
         if not self._history:
             return
-        render = self._history.pop()
-        self._current_render = None  # don't re-push the screen we're leaving
-        self._show(render)
+        render, snapshot = self._history.pop()
+        self.engine.restore(snapshot)
+        self._current_render = render
+        self._current_snapshot = snapshot
+        render()
 
     # -- Frame management --------------------------------------------------
 
     def _new_frame(self) -> RowLayout:
         if self.current_frame is not None:
             self.current_frame.destroy()
-        frame = ttk.Frame(self.root, padding="20 20 20 90")
+        frame = ttk.Frame(self.root, padding="24 20 24 24")
         frame.grid(column=0, row=0, sticky=(N, W, E, S))
         self.current_frame = frame
         self.layout = RowLayout(frame)
         if self._history:
-            self.layout.button("← Back", command=self._go_back)
+            self.layout.button("← Back", command=self._go_back, style="Back.TButton")
         return self.layout
 
     # -- Screen 1: the weekly recommendation --------------------------------
 
     def show_recommendations(self, recommendations: list[Recommendation]) -> None:
         layout = self._new_frame()
-        layout.label("Recommendation for this week:")
+        layout.heading("Recommendation for this week")
 
         for rec in recommendations:
-            layout.label(f"{rec.day.capitalize()}: {rec.action} for {rec.goal}")
+            layout.day_row(f"{rec.day.capitalize()}:", f"{rec.action} for {rec.goal}")
 
         feedback = StringVar()
 
@@ -136,7 +325,9 @@ class App:
             feedback.set("Have a great week!")
 
         accept_button, reject_button = layout.button_pair(
-            ("Accept", accept), ("Do Not Accept", lambda: self._show(self.show_rejection_picker))
+            ("Accept", accept),
+            ("Do Not Accept", lambda: self._show(self.show_rejection_picker)),
+            left_style="Success.TButton",
         )
         layout.label_var(feedback)
 
@@ -144,7 +335,7 @@ class App:
 
     def show_rejection_picker(self) -> None:
         layout = self._new_frame()
-        layout.label("Which recommendation do you disagree with?")
+        layout.heading("Which recommendation do you disagree with?")
 
         for rec in self.engine.recommend():
             layout.button(
@@ -158,8 +349,8 @@ class App:
         layout = self._new_frame()
         day_number = domain.DAY_NUMBERS[recommendation.day]
 
-        layout.label("What exactly is the problem?")
-        layout.label("relevant context:")
+        layout.heading("What exactly is the problem?")
+        layout.section("Relevant context")
 
         for symbol in self.engine.relevant_context(day_number):
             layout.button(
@@ -169,7 +360,7 @@ class App:
                 ),
             )
 
-        layout.label("Selected goal:")
+        layout.section("Selected goal")
         layout.button(
             recommendation.goal,
             command=lambda: self._show(
@@ -177,7 +368,7 @@ class App:
             ),
         )
 
-        layout.label("Selected action:")
+        layout.section("Selected action")
         layout.button(
             recommendation.action,
             command=lambda: self._show(
@@ -190,19 +381,19 @@ class App:
     def show_context_problem(self, symbol, day_number: int) -> None:
         layout = self._new_frame()
         day_name = domain.DAY_NAMES[day_number].capitalize()
-        layout.label(f"You disagree with the identified context: {symbol} on {day_name}")
+        layout.heading(f"You disagree with the identified context: {symbol} on {day_name}")
 
         fact = str(symbol)
         matching_fact = next((f for f in self.engine.context_facts if f == fact), None)
         if matching_fact is not None:
             self._offer_fact_removal(layout, "context", matching_fact)
         else:
-            layout.label("This is a direct result of the knowledge base.")
+            self._offer_new_fact(layout, "context")
 
     def show_goal_problem(self, goal: str, day_number: int) -> None:
         layout = self._new_frame()
         day_name = domain.DAY_NAMES[day_number].capitalize()
-        layout.label(f"You disagree with the selected goal: {goal} on {day_name}")
+        layout.heading(f"You disagree with the selected goal: {goal} on {day_name}")
 
         fact = f"dailygoal({day_number},{goal})"
         if fact in self.engine.goal_facts:
@@ -211,33 +402,34 @@ class App:
 
         explanation = self.engine.explain_goal(day_number, goal)
         if explanation is None:
-            layout.label("not part of the knowledge base")
+            self._offer_new_fact(layout, "goal")
             return
 
-        layout.label("This is a direct result of the knowledge base:")
+        layout.muted("This is a direct result of the knowledge base:")
         self._show_rule_explanation(layout, explanation)
 
     def show_action_problem(self, action: str, day_number: int) -> None:
         layout = self._new_frame()
         day_name = domain.DAY_NAMES[day_number].capitalize()
-        layout.label(f"You disagree with the selected action: {action} on {day_name}")
+        layout.heading(f"You disagree with the selected action: {action} on {day_name}")
 
         fact = f"dailyaction({day_number},{action})"
         matching_fact = next((f for f in self.engine.action_facts if f == fact), None)
         if matching_fact is not None:
             self._offer_fact_removal(layout, "action", matching_fact)
         else:
-            layout.label("This is a direct result of the knowledge base.")
+            self._offer_new_fact(layout, "action")
 
     def _show_rule_explanation(self, layout: RowLayout, explanation: Explanation) -> None:
         head, body = explanation.rule
-        layout.label(f"{explanation.fact} comes from the following rule:")
+        layout.section(f"{explanation.fact} comes from the following rule")
         layout.button(
             f"{body} implies {head}",
             command=lambda: self.remove_rule(explanation.rule),
+            style="Danger.TButton",
         )
 
-        layout.label("and the following prerequisites:")
+        layout.section("and the following prerequisites")
         for prerequisite in explanation.prerequisites:
             layout.button(
                 str(prerequisite),
@@ -248,7 +440,7 @@ class App:
 
     def show_prerequisite_problem(self, symbol) -> None:
         layout = self._new_frame()
-        layout.label(f"You disagree with the prerequisite: {symbol}")
+        layout.heading(f"You disagree with the prerequisite: {symbol}")
 
         fact = str(symbol)
         for category in ("context", "goal", "action"):
@@ -256,13 +448,32 @@ class App:
             if fact in facts:
                 self._offer_fact_removal(layout, category, fact)
                 return
-        layout.label("This is a direct result of the knowledge base.")
+        if symbol.name == "dailyaction":
+            self._offer_new_fact(layout, "action")
+        else:
+            layout.muted("This is a direct result of the knowledge base.")
+
+    def _offer_new_fact(self, layout: RowLayout, category: str) -> None:
+        """This wasn't entered as a fact and isn't a direct consequence of a
+        hard rule either - it was filled in by a default rule, so there's
+        nothing to remove. Offer to add a fact instead, the same way
+        `show_add_replacement_fact` does after a removal."""
+        layout.label("This value was filled in by default and can be changed.")
+        layout.muted("What would you prefer instead?")
+        new_fact = StringVar()
+        layout.entry(new_fact, fill=True)
+        layout.button(
+            "Enter",
+            command=lambda: self.add_fact(category, new_fact.get()),
+            style="Accent.TButton",
+        )
 
     def _offer_fact_removal(self, layout: RowLayout, category: str, fact: str) -> None:
         layout.label("This information was entered as a fact. Would you like to remove it?")
         layout.button_pair(
             ("Yes", lambda: self.remove_fact(category, fact)),
             ("No", self._go_back),
+            left_style="Danger.TButton",
         )
 
     # -- Actions that mutate the engine and re-solve -------------------------
@@ -277,12 +488,16 @@ class App:
 
     def show_add_replacement_fact(self, category: str) -> None:
         layout = self._new_frame()
-        layout.label("Would you like to add a different fact instead?")
+        layout.heading("Would you like to add a different fact instead?")
 
         new_fact = StringVar()
-        layout.entry(new_fact)
-        layout.button("Enter", command=lambda: self.add_fact(category, new_fact.get()))
-        layout.button("Skip", command=lambda: self._show(self.show_updated_recommendation))
+        layout.entry(new_fact, fill=True)
+        layout.button_pair(
+            ("Enter", lambda: self.add_fact(category, new_fact.get())),
+            ("Skip", lambda: self._show(self.show_updated_recommendation)),
+            left_style="Accent.TButton",
+            fill=True,
+        )
 
     def add_fact(self, category: str, fact: str) -> None:
         try:
@@ -305,13 +520,14 @@ class App:
         then retries adding the proposed fact (see `resolve_conflict`),
         since clearing the obstacle is the whole point of that button."""
         layout = self._new_frame()
-        layout.label(report.message)
-        layout.label("Click one to remove it and resolve the conflict:")
+        layout.warning(report.message)
+        layout.muted("Click one to remove it and resolve the conflict:")
         proposed = next(o for o in report.options if isinstance(o, ProposedFact))
         for option in report.options:
             layout.button(
                 self._conflict_option_label(option),
                 command=lambda option=option: self.resolve_conflict(option, proposed),
+                style=self._conflict_option_style(option),
             )
 
     @staticmethod
@@ -324,6 +540,10 @@ class App:
             head, body = option.rule
             return f"Remove rule: {head} :- {body}"
         raise TypeError(f"unknown conflict option: {option!r}")
+
+    @staticmethod
+    def _conflict_option_style(option: ConflictOption) -> str:
+        return "TButton" if isinstance(option, ProposedFact) else "Danger.TButton"
 
     def resolve_conflict(self, option: ConflictOption, proposed: ProposedFact) -> None:
         if isinstance(option, ProposedFact):
@@ -360,7 +580,7 @@ class App:
             recommendations = self.engine.recommend()
         except Inconsistent as error:
             layout = self._new_frame()
-            layout.label(str(error))
+            layout.warning(str(error))
             return
         self.show_recommendations(recommendations)
 
