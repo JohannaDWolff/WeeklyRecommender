@@ -156,10 +156,10 @@ OUTPUT_FORMATTING_RULES = [
 CONTEXT_PREFERENCES = ["dailyenergylevel(3,medium)", "dailyenergylevel(7,low)"]
 
 GOAL_PREFERENCES = [
-    "dailygoal(1,socialising)",
-    "dailygoal(4,exercising)",
-    "dailygoal(7,socialising)",
+    "dailygoal(1,socialising)", "dailygoal(2,socialising)",
+    "dailygoal(4,exercising)", "dailygoal(4,creativity)",
+    "dailygoal(7,creativity)", "dailygoal(7,socialising)", "dailygoal(7,resting)", "dailygoal(7,exercising)", "dailygoal(7,chores)",
     "dailygoal(6,resting)",
 ]
 
-ACTION_PREFERENCES = ["dailyaction(1,pubquiz)", "dailyaction(2,swimming)", "-dailyaction(6,tv)"]
+ACTION_PREFERENCES = ["dailyaction(1,pubquiz)", "dailyaction(1,vacuum)", "dailyaction(1,laundry)", "dailyaction(3,dinnerwithfriend)", "dailyaction(2,swimming)", "dailyaction(4,painting)", "dailyaction(2,vacuum)", "-dailyaction(6,tv)", "dailyaction(7,painting)", "dailyaction(7,knittingalone)", "dailyaction(7,journaling)"]

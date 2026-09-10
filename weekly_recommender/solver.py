@@ -74,11 +74,22 @@ def preference_rank(answer_set: AnswerSet, parsed_preferences: Sequence[clingo.S
     return len(parsed_preferences)
 
 
+def preference_vector(
+    answer_set: AnswerSet, parsed_preferences: Sequence[clingo.Symbol]
+) -> tuple[int, ...]:
+    """0/1 per preference (matched/unmatched), in list order. Comparing these
+    lexicographically prefers matching an earlier preference over any later
+    one, while still using later preferences to break ties between answer
+    sets that agree on every earlier preference."""
+    return tuple(0 if preference in answer_set else 1 for preference in parsed_preferences)
+
+
 def rank_by_preference(
     answer_sets: list[AnswerSet], preferences: Sequence[str]
 ) -> list[AnswerSet]:
-    """Sort answer sets so that the one matching the earliest preference
-    (by list position) comes first. Answer sets matching no preference sort
-    last, in their original relative order (stable sort)."""
+    """Sort answer sets lexicographically by preference: matching an earlier
+    preference always outranks matching only later ones, and among answer
+    sets tied on all earlier preferences, later preferences (by list
+    position) break the tie."""
     parsed = parse_preferences(preferences)
-    return sorted(answer_sets, key=lambda answer_set: preference_rank(answer_set, parsed))
+    return sorted(answer_sets, key=lambda answer_set: preference_vector(answer_set, parsed))
