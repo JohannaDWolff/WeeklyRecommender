@@ -6,6 +6,7 @@ original prototype with an explicit class and clingo's Symbol API.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
@@ -97,7 +98,10 @@ class EngineState(NamedTuple):
 class ConflictReport(NamedTuple):
     """Why `add_fact` failed, and every fact/rule whose removal would
     resolve it (always including the proposed fact itself, as a "don't add
-    it" option)."""
+    it" option). Any line in `message` indented by 8 spaces is a
+    `describe_rule_variables` legend, not prose (a rule quote is only
+    indented 4) - the GUI renders those lines in its muted style instead of
+    the normal one (see `App.show_conflict_report`)."""
 
     message: str
     options: list[ConflictOption]
@@ -148,6 +152,32 @@ def split_body(body: str) -> list[str]:
     if current:
         terms.append("".join(current).strip())
     return terms
+
+
+_VARIABLE_LABELS = {"D": "day", "G": "goal", "A": "action"}
+
+# Which fact list to search when resolving one of _VARIABLE_LABELS from a
+# rule body term - see `RecommenderEngine._resolve_variable_from_facts`.
+_PREDICATE_FACTS = {
+    "dailyenergylevel": "context_facts",
+    "dailyweather": "context_facts",
+    "dailyfriendavailable": "context_facts",
+    "dailygoal": "goal_facts",
+    "dailyaction": "action_facts",
+}
+
+
+def _predicate_args(term: str) -> tuple[str, list[str]]:
+    """The predicate name and comma-separated argument texts of a
+    predicate-shaped ASP term like `dailygoal(D,G)` (a leading `-` for
+    classical negation, if present, is ignored)."""
+    text = term.strip().lstrip("-")
+    name, _, rest = text.partition("(")
+    return name.strip(), (split_body(rest.rstrip(")")) if rest else [])
+
+
+def _substitute_variable(text: str, variable: str, value: str) -> str:
+    return re.sub(rf"\b{variable}\b", value, text)
 
 
 @dataclass
@@ -368,6 +398,77 @@ class RecommenderEngine:
 
         return None
 
+    def describe_rule_variables(
+        self, rule: tuple[str, str], grounded: clingo.Symbol
+    ) -> str | None:
+        """A human-readable legend grounding `rule`'s D/G/A variables -
+        wherever their values can be pinned down - to the concrete values
+        of `grounded`, the concrete atom this rule was found to derive
+        (e.g. `RemovableRule.grounded`, or an `Explanation.fact`), e.g.
+        "D (day) = 2 (Tuesday), G (goal) = exercising, A (action) =
+        swimming". Head variables come straight from `grounded`; any of
+        D/G/A still unknown are looked up by matching the rule's body (with
+        the already-known variables substituted in) against the current
+        fact base - this is what recovers `A` above even though the rule's
+        head (`dailygoal(D,G) :- dailyaction(D,A), achieves(G,A)`) only
+        binds D and G directly. Variables that resolve to neither a head
+        binding nor a fact-base match (a literal like `chores`, or an
+        expression like `D+1` in the day-adjacency rules, with nothing
+        pinning it down) are left out; returns None if none could be
+        resolved at all."""
+        head, body = rule
+        _, head_args = _predicate_args(head)
+        bindings: dict[str, clingo.Symbol] = {}
+        substituted_body = body
+        for arg, value in zip(head_args, grounded.arguments):
+            if arg in _VARIABLE_LABELS:
+                bindings[arg] = value
+                substituted_body = _substitute_variable(substituted_body, arg, str(value))
+
+        for var in _VARIABLE_LABELS:
+            if var in bindings:
+                continue
+            value = self._resolve_variable_from_facts(substituted_body, var)
+            if value is not None:
+                bindings[var] = value
+                substituted_body = _substitute_variable(substituted_body, var, str(value))
+
+        parts = []
+        for var, label in _VARIABLE_LABELS.items():
+            if var not in bindings:
+                continue
+            value = bindings[var]
+            text = f"{var} ({label}) = {value}"
+            if var == "D" and value.type == clingo.SymbolType.Number:
+                day_name = domain.DAY_NAMES.get(value.number)
+                if day_name:
+                    text += f" ({day_name.capitalize()})"
+            parts.append(text)
+        return ", ".join(parts) + "." if parts else None
+
+    def _resolve_variable_from_facts(self, body: str, variable: str) -> clingo.Symbol | None:
+        """Find `variable`'s value by matching a term of `body` (which
+        should already have every other known variable substituted in)
+        against the current fact base for that term's predicate."""
+        for term in split_body(body):
+            predicate, args = _predicate_args(term)
+            facts_attr = _PREDICATE_FACTS.get(predicate)
+            if facts_attr is None or variable not in args:
+                continue
+            index = args.index(variable)
+            for fact_text in getattr(self, facts_attr):
+                symbol = clingo.parse_term(fact_text)
+                if symbol.name != predicate or not symbol.positive:
+                    continue
+                if len(symbol.arguments) != len(args):
+                    continue
+                if all(
+                    i == index or args[i] == str(symbol.arguments[i])
+                    for i in range(len(args))
+                ):
+                    return symbol.arguments[index]
+        return None
+
     def remove_rule(self, rule: tuple[str, str]) -> None:
         self.hard_rules.remove(rule)
 
@@ -463,11 +564,14 @@ class RecommenderEngine:
         if rule is not None:
             options.append(RemovableRule(rule))
             head, body = rule
-            return ConflictReport(
-                message=f"{fact} contradicts the rule `{head} :- {body}`, "
-                f"which already derives {negation}.",
-                options=options,
+            message = (
+                f"{fact} contradicts the rule `{head} :- {body}`, "
+                f"which already derives {negation}."
             )
+            legend = self.describe_rule_variables(rule, negation)
+            if legend:
+                message += f"\n        {legend}"
+            return ConflictReport(message=message, options=options)
 
         return ConflictReport(
             message=f"{fact} contradicts {negation}, which already holds in the knowledge base.",
@@ -500,11 +604,17 @@ class RecommenderEngine:
             )
 
         for positive, negative in self._find_contradictions(program):
+            lines.append("")
             lines.append(f"Both {positive} and {negative} end up derivable:")
             for target in (positive, negative):
                 rule = self._find_rule_for(target, program)
                 if rule is not None:
-                    lines.append(f"  > {target} from `{rule[0].strip()} :- {rule[1]}`")
+                    lines.append(
+                        f"\n{target} from\n    `{rule[0].strip()} :- {rule[1]}`"
+                    )
+                    legend = self.describe_rule_variables(rule, target)
+                    if legend:
+                        lines.append(f"        {legend}")
                     options.append(RemovableRule(rule))
 
         # De-duplicate while preserving order (the same rule can derive more

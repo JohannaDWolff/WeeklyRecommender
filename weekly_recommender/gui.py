@@ -408,6 +408,7 @@ class App:
             return
 
         layout.muted("This is a direct result of the knowledge base:")
+        layout.muted("Click on one of the options to remove it from the knowledge base.")
         self._show_rule_explanation(layout, explanation)
 
     def show_action_problem(self, action: str, day_number: int) -> None:
@@ -430,6 +431,9 @@ class App:
             command=lambda: self.remove_rule(explanation.rule),
             style="Danger.TButton",
         )
+        legend = self.engine.describe_rule_variables(explanation.rule, explanation.fact)
+        if legend:
+            layout.muted(legend)
 
         layout.section("and the following prerequisites")
         for prerequisite in explanation.prerequisites:
@@ -571,7 +575,8 @@ class App:
         then retries adding the proposed fact (see `resolve_conflict`),
         since clearing the obstacle is the whole point of that button."""
         layout = self._new_frame()
-        layout.warning(report.message)
+        self._show_conflict_message(layout, report.message)
+        layout.label("")
         layout.muted("Click one to remove it and resolve the conflict:")
         proposed = next(o for o in report.options if isinstance(o, ProposedFact))
         for option in report.options:
@@ -580,6 +585,18 @@ class App:
                 command=lambda option=option: self.resolve_conflict(option, proposed),
                 style=self._conflict_option_style(option),
             )
+
+    @staticmethod
+    def _show_conflict_message(layout: RowLayout, message: str) -> None:
+        """Render a `ConflictReport.message`, one line at a time, so a
+        `describe_rule_variables` legend line (indented 8 spaces - see
+        `ConflictReport`) can be shown smaller and in the muted grey used
+        elsewhere, instead of blending into the surrounding explanation."""
+        for line in message.split("\n"):
+            if line.startswith("        "):
+                layout.muted(line.strip())
+            else:
+                layout.label(line, pady=(0, 2))
 
     @staticmethod
     def _conflict_option_label(option: ConflictOption) -> str:
