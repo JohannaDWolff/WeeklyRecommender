@@ -24,7 +24,6 @@ CONTEXT_FACTORS = ["dailyenergylevel", "dailyweather", "dailyfriendavailable"]
 CONTEXT_DEFINITIONS = [
     "energylevel(low;medium;high)",
     "daynumber(1..7)",
-    "weekend(6;7)",
     "weather(good;bad)",
 ]
 
@@ -36,8 +35,8 @@ ACTION_DEFINITIONS = [
     "cleankitchen;cleanbathroom;vacuum)",
     "socialactivity(pubquiz;knittingclub;gamenight;dinnerwithfriend;karaoke)",
     "exerciseactivity(swimming;running;yoga)",
-    "restingactivity(knittingalone;yoga;tv;reading;meditating)",
-    "creativeactivity(knittingclub;knittingalone;painting;journaling)",
+    "restingactivity(yoga;tv;reading;meditating)",
+    "creativeactivity(knittingalone;painting;journaling)",
     "choreactivity(laundry;cleankitchen;cleanbathroom;vacuum)",
 ]
 
@@ -70,13 +69,9 @@ CONTEXT_KNOWLEDGE = [
 ]
 
 GOAL_KNOWLEDGE = [
-    ("-dailygoal(D,G)", "daynumber(D), D <= 5, goal(G), dailygoal(D,F), G != F"),
+    ("-dailygoal(D,G)", "daynumber(D), goal(G), dailygoal(D,F), G != F"),
     ("-dailygoal(D+1,G)", "dailygoal(D,G)"),
     ("-dailygoal(D-1,G)", "dailygoal(D,G)"),
-    (
-        "-dailygoal(D,G)",
-        "daynumber(D), D > 5, goal(G), dailygoal(D,F), G != F, dailygoal(D,E), E != F, E != G",
-    ),
     ("-dailygoal(D,chores)", "dailyenergylevel(D,low)"),
     ("-dailygoal(D,exercising)", "dailyenergylevel(D,low)"),
     ("-dailygoal(D,resting)", "dailyenergylevel(D,high)"),
@@ -90,17 +85,8 @@ GOAL_KNOWLEDGE = [
 ]
 
 ACTION_KNOWLEDGE = [
-    (
-        "-dailyaction(D,A)",
-        "daynumber(D), D > 5, activity(A), achieves(G,A), achieves(G,B), "
-        "dailygoal(D,G), dailyaction(D,B), A != B",
-    ),
     ("-dailyaction(D,A)", "daynumber(D), choreactivity(A), dailyaction(C,A), C != D"),
-    ("-dailyaction(D,A)", "daynumber(D), D < 6, activity(A), dailyaction(D,B), A != B"),
-    (
-        "-dailyaction(D,G)",
-        "daynumber(D), D > 5, activity(G), dailyaction(D,F), G != F, dailyaction(D,E), E != F, E != G",
-    ),
+    ("-dailyaction(D,A)", "daynumber(D), activity(A), dailyaction(D,B), A != B"),
     ("-dailyaction(D+1,A)", "dailyaction(D,A)"),
     ("-dailyaction(D-1,A)", "dailyaction(D,A)"),
     ("-dailyaction(D,pubquiz)", "dailyenergylevel(D,low)"),
@@ -156,7 +142,7 @@ OUTPUT_FORMATTING_RULES = [
 CONTEXT_PREFERENCES = ["dailyenergylevel(3,medium)", "dailyenergylevel(7,low)"]
 
 GOAL_PREFERENCES = [
-    "dailygoal(1,socialising)", "dailygoal(2,socialising)",
+    "dailygoal(1,socialising)", "dailygoal(2,socialising)", "dailygoal(3,socialising)",
     "dailygoal(4,exercising)", "dailygoal(4,creativity)",
     "dailygoal(7,creativity)", "dailygoal(7,socialising)", "dailygoal(7,resting)", "dailygoal(7,exercising)", "dailygoal(7,chores)",
     "dailygoal(6,resting)",
