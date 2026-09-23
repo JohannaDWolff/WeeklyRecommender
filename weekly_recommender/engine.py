@@ -603,7 +603,7 @@ class RecommenderEngine:
             options.append(RemovableRule(rule))
             head, body = rule
             message = (
-                f"{fact} contradicts the rule `{head} :- {body}`, "
+                f"{fact} contradicts the rule `{body} implies {head}`, "
                 f"which already derives {negation}.{caused_by}"
             )
             legend = self.describe_rule_variables(rule, negation)
@@ -651,7 +651,7 @@ class RecommenderEngine:
                 rule = self._find_rule_for(target, program)
                 if rule is not None:
                     lines.append(
-                        f"\n{target} from\n    `{rule[0].strip()} :- {rule[1]}`"
+                        f"\n{target} from\n    `{rule[1]} implies {rule[0].strip()}`"
                     )
                     legend = self.describe_rule_variables(rule, target)
                     if legend:

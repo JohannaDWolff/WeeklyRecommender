@@ -645,7 +645,7 @@ class App:
             return f"Remove fact: {option.fact}"
         if isinstance(option, RemovableRule):
             head, body = option.rule
-            return f"Remove rule: {head} :- {body}"
+            return f"Remove rule: {body} implies {head}"
         raise TypeError(f"unknown conflict option: {option!r}")
 
     @staticmethod
