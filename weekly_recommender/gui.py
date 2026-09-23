@@ -496,7 +496,7 @@ class App:
         layout.button_pair(
             ("Yes", lambda: self.remove_fact(category, fact)),
             ("No", self._go_back),
-            left_style="Danger.TButton",
+            left_style="Success.TButton",
         )
 
     # -- Actions that mutate the engine and re-solve -------------------------
