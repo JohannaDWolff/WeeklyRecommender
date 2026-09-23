@@ -19,6 +19,14 @@ DAY_NUMBERS = {name: number for number, name in DAY_NAMES.items()}
 # (used only to drive the GUI's explanation view).
 CONTEXT_FACTORS = ["dailyenergylevel", "dailyweather", "dailyfriendavailable"]
 
+# Human-readable labels for CONTEXT_FACTORS, e.g. "dailyweather(1,good)" is
+# shown to the user as "weather: good" - see gui.py's `_format_context_fact`.
+CONTEXT_FACTOR_LABELS = {
+    "dailyenergylevel": "energy level",
+    "dailyweather": "weather",
+    "dailyfriendavailable": "friend available",
+}
+
 # --- Vocabulary -------------------------------------------------------------
 
 CONTEXT_DEFINITIONS = [

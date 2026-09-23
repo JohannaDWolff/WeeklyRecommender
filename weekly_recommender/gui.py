@@ -32,6 +32,15 @@ from engine import (
     replacement_fact,
 )
 
+def _format_context_fact(symbol) -> str:
+    """Render a context symbol (e.g. `dailyweather(1,good)`) as the
+    human-readable "label: value" shown in the GUI, e.g. "weather: good" -
+    falls back to the raw predicate name if it's not a known context
+    factor."""
+    label = domain.CONTEXT_FACTOR_LABELS.get(symbol.name, symbol.name)
+    return f"{label}: {symbol.arguments[1]}"
+
+
 COLORS = {
     "background": "#f5f6fa",
     "surface": "#ffffff",
@@ -356,7 +365,7 @@ class App:
 
         for symbol in self.engine.relevant_context(day_number):
             layout.button(
-                str(symbol),
+                _format_context_fact(symbol),
                 command=lambda symbol=symbol, day_number=day_number: self._show(
                     lambda: self.show_context_problem(symbol, day_number)
                 ),
@@ -383,7 +392,10 @@ class App:
     def show_context_problem(self, symbol, day_number: int) -> None:
         layout = self._new_frame()
         day_name = domain.DAY_NAMES[day_number].capitalize()
-        layout.heading(f"You disagree with the identified context: {symbol} on {day_name}")
+        layout.heading(
+            f"You disagree with the identified context: {_format_context_fact(symbol)} "
+            f"on {day_name}"
+        )
 
         fact = str(symbol)
         matching_fact = next((f for f in self.engine.context_facts if f == fact), None)
