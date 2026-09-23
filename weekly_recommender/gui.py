@@ -22,6 +22,7 @@ from engine import (
     ConflictOption,
     EngineState,
     Explanation,
+    FACT_VALUE_OPTIONS,
     Inconsistent,
     PreferenceExplanation,
     ProposedFact,
@@ -161,6 +162,17 @@ def _configure_style(root: Tk) -> None:
         fieldbackground=COLORS["surface"],
     )
 
+    style.configure(
+        "TCombobox",
+        padding=(6, 4),
+        fieldbackground=COLORS["surface"],
+    )
+    style.map(
+        "TCombobox",
+        fieldbackground=[("readonly", COLORS["surface"])],
+        foreground=[("readonly", COLORS["text"])],
+    )
+
 
 class RowLayout:
     """Places widgets in a frame's grid, one row at a time, tracking the
@@ -250,6 +262,19 @@ class RowLayout:
 
     def entry(self, textvariable: StringVar, width: int = 81, fill: bool = False) -> ttk.Entry:
         widget = ttk.Entry(self.frame, width=width, textvariable=textvariable)
+        if fill:
+            widget.grid(column=1, row=self.row, columnspan=2, sticky=(W, E), pady=(0, 4))
+        else:
+            widget.grid(column=1, row=self.row, sticky=W, pady=(0, 4))
+        self.row += 1
+        return widget
+
+    def combobox(
+        self, textvariable: StringVar, values: list[str], width: int = 81, fill: bool = False
+    ) -> ttk.Combobox:
+        widget = ttk.Combobox(
+            self.frame, width=width, textvariable=textvariable, values=values, state="readonly"
+        )
         if fill:
             widget.grid(column=1, row=self.row, columnspan=2, sticky=(W, E), pady=(0, 4))
         else:
@@ -482,7 +507,8 @@ class App:
         layout.muted(f"Currently: {old_fact}")
         layout.muted("What would you prefer instead?")
         new_value = StringVar()
-        layout.entry(new_value, fill=True)
+        predicate = old_fact.split("(")[0]
+        layout.combobox(new_value, FACT_VALUE_OPTIONS[predicate], fill=True)
         layout.button(
             "Enter",
             command=lambda: self.propose_replacement(
@@ -515,7 +541,8 @@ class App:
         layout.muted(f"Replacing: {old_fact}")
 
         new_value = StringVar()
-        layout.entry(new_value, fill=True)
+        predicate = old_fact.split("(")[0]
+        layout.combobox(new_value, FACT_VALUE_OPTIONS[predicate], fill=True)
         layout.button_pair(
             ("Enter", lambda: self.add_fact(category, replacement_fact(old_fact, new_value.get()))),
             ("Skip", lambda: self._show(self.show_updated_recommendation)),

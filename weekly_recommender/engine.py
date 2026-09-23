@@ -167,6 +167,31 @@ _PREDICATE_FACTS = {
 }
 
 
+def _parse_sort(definition: str) -> tuple[str, list[str]]:
+    """A sort definition like `"weather(good;bad)"` -> `("weather", ["good", "bad"])`."""
+    name, _, rest = definition.partition("(")
+    return name, rest.rstrip(")").split(";")
+
+
+_SORT_VALUES = dict(
+    _parse_sort(definition)
+    for definition in domain.CONTEXT_DEFINITIONS + domain.GOAL_DEFINITIONS + domain.ACTION_DEFINITIONS
+)
+
+# Valid values for each mutable fact predicate's trailing argument, used by
+# the GUI to populate the read-only dropdown offered when entering a new
+# fact value (see gui.py's RowLayout.combobox and its two call sites).
+# dailyfriendavailable has no ASP sort of its own (true/false only ever
+# appear as literal argument values in facts/rules), so it's hardcoded.
+FACT_VALUE_OPTIONS: dict[str, list[str]] = {
+    "dailyenergylevel": _SORT_VALUES["energylevel"],
+    "dailyweather": _SORT_VALUES["weather"],
+    "dailyfriendavailable": ["true", "false"],
+    "dailygoal": _SORT_VALUES["goal"],
+    "dailyaction": _SORT_VALUES["activity"],
+}
+
+
 def _predicate_args(term: str) -> tuple[str, list[str]]:
     """The predicate name and comma-separated argument texts of a
     predicate-shaped ASP term like `dailygoal(D,G)` (a leading `-` for
