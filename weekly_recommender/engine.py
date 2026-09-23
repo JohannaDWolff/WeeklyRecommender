@@ -547,17 +547,18 @@ class RecommenderEngine:
         proposed fact itself) whose removal would resolve it - see
         `_report_direct_conflict` and `_report_deep_conflict`."""
         negation = clingo.parse_term(_negate(fact))
-        baseline = self._solve_knowledge_base()
-        if baseline and negation in baseline[0]:
-            report = self._report_direct_conflict(category, fact, negation)
-            raise Inconsistent(report.message, report)
-
         trial_facts = {
             "context": list(self.context_facts),
             "goal": list(self.goal_facts),
             "action": list(self.action_facts),
         }
         trial_facts[category].append(fact)
+
+        baseline = self._solve_knowledge_base()
+        if baseline and negation in baseline[0]:
+            report = self._report_direct_conflict(category, fact, negation, trial_facts)
+            raise Inconsistent(report.message, report)
+
         program = self._knowledge_base_program(**{
             f"{key}_facts": value for key, value in trial_facts.items()
         })
@@ -569,11 +570,19 @@ class RecommenderEngine:
         raise Inconsistent(report.message, report)
 
     def _report_direct_conflict(
-        self, category: str, fact: str, negation: clingo.Symbol
+        self,
+        category: str,
+        fact: str,
+        negation: clingo.Symbol,
+        trial_facts: dict[str, list[str]],
     ) -> ConflictReport:
         """`negation` is already true before `fact` is even added: point to
         the explicit fact or hard-knowledge rule responsible, offering it
-        (and abandoning `fact`) as resolution options."""
+        (and abandoning `fact`) as resolution options. Also runs the same
+        `_find_conflicting_facts` search `_report_deep_conflict` uses, so a
+        fact that merely satisfies the responsible rule's body (e.g. the
+        day's energy level triggering a `-dailygoal(D,exercising)` rule) is
+        offered for removal too, not just the rule itself."""
         options: list[ConflictOption] = [ProposedFact(category, fact)]
 
         for existing_category in ("context", "goal", "action"):
@@ -585,22 +594,29 @@ class RecommenderEngine:
                         options=options,
                     )
 
+        culprits = self._find_conflicting_facts(category, fact, trial_facts)
+        options.extend(culprits)
+        caused_by = f" Caused by: {', '.join(c.fact for c in culprits)}." if culprits else ""
+
         rule = self._find_rule_for(negation)
         if rule is not None:
             options.append(RemovableRule(rule))
             head, body = rule
             message = (
                 f"{fact} contradicts the rule `{head} :- {body}`, "
-                f"which already derives {negation}."
+                f"which already derives {negation}.{caused_by}"
             )
             legend = self.describe_rule_variables(rule, negation)
             if legend:
                 message += f"\n        {legend}"
-            return ConflictReport(message=message, options=options)
+            return ConflictReport(message=message, options=list(dict.fromkeys(options)))
 
         return ConflictReport(
-            message=f"{fact} contradicts {negation}, which already holds in the knowledge base.",
-            options=options,
+            message=(
+                f"{fact} contradicts {negation}, which already holds "
+                f"in the knowledge base.{caused_by}"
+            ),
+            options=list(dict.fromkeys(options)),
         )
 
     def _report_deep_conflict(
