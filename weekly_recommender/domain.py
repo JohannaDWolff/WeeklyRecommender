@@ -45,8 +45,7 @@ ACTION_DEFINITIONS = [
 DEFAULT_CONTEXT_FACTS = [
     "dailyenergylevel(2,high)",
     "dailyenergylevel(3,low)",
-    "dailyenergylevel(4,low)",
-    "-dailyenergylevel(5,medium)",
+    "dailyenergylevel(4,high)",
     "dailyenergylevel(7,low)",
     "dailyenergylevel(1,medium)",
     "dailyweather(3,bad)",
