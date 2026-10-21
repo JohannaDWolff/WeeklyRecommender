@@ -24,6 +24,7 @@ from engine import (
     Explanation,
     FACT_VALUE_OPTIONS,
     Inconsistent,
+    InvalidRule,
     PreferenceExplanation,
     ProposedFact,
     Recommendation,
@@ -163,6 +164,14 @@ def _configure_style(root: Tk) -> None:
     )
 
     style.configure(
+        "TRadiobutton",
+        background=COLORS["background"],
+        foreground=COLORS["text"],
+        font=(FONT_FAMILY, 11),
+    )
+    style.map("TRadiobutton", background=[("active", COLORS["background"])])
+
+    style.configure(
         "TCombobox",
         padding=(6, 4),
         fieldbackground=COLORS["surface"],
@@ -255,7 +264,9 @@ class RowLayout:
         return left_widget, right_widget
 
     def label_var(self, textvariable: StringVar, style: str = "Success.TLabel") -> ttk.Label:
-        widget = ttk.Label(self.frame, textvariable=textvariable, style=style)
+        widget = ttk.Label(
+            self.frame, textvariable=textvariable, style=style, wraplength=460, justify="left"
+        )
         widget.grid(column=1, row=self.row, sticky=(W, E), pady=(6, 0))
         self.row += 1
         return widget
@@ -268,6 +279,17 @@ class RowLayout:
             widget.grid(column=1, row=self.row, sticky=W, pady=(0, 4))
         self.row += 1
         return widget
+
+    def radio_buttons(self, variable: StringVar, options: list[tuple[str, str]]) -> ttk.Frame:
+        """Mutually exclusive (label, value) choices side by side on one row."""
+        row_frame = ttk.Frame(self.frame)
+        row_frame.grid(column=1, row=self.row, sticky=W, pady=(4, 8))
+        for text, value in options:
+            ttk.Radiobutton(row_frame, text=text, value=value, variable=variable).pack(
+                side="left", padx=(0, 16)
+            )
+        self.row += 1
+        return row_frame
 
     def combobox(
         self, textvariable: StringVar, values: list[str], width: int = 81, fill: bool = False
@@ -378,6 +400,47 @@ class App:
                 f"{rec.day}: {rec.action} for {rec.goal}",
                 command=lambda rec=rec: self._show(lambda: self.show_explanation(rec)),
             )
+
+        layout.button(
+            "General correction",
+            command=lambda: self._show(self.show_general_correction),
+        )
+
+    # -- Screen 2b: a correction that applies to the whole week -------------
+
+    def show_general_correction(self) -> None:
+        layout = self._new_frame()
+        layout.heading("What general rule would you like to add regarding the whole week?")
+
+        prerequisites = StringVar()
+        consequence = StringVar()
+        rule_kind = StringVar(value="hard")
+
+        layout.section("Prerequisites")
+        layout.entry(prerequisites, fill=True)
+        layout.section("Consequence")
+        layout.entry(consequence, fill=True)
+        layout.radio_buttons(rule_kind, [("Hard rule", "hard"), ("Soft rule", "soft")])
+        feedback = StringVar()
+        layout.button(
+            "Submit",
+            command=lambda: self.submit_general_rule(
+                rule_kind.get(), prerequisites.get(), consequence.get(), feedback
+            ),
+            style="Accent.TButton",
+        )
+        layout.label_var(feedback, style="Warning.TLabel")
+
+    def submit_general_rule(
+        self, kind: str, prerequisites: str, consequence: str, feedback: StringVar
+    ) -> None:
+        add = self.engine.add_default if kind == "soft" else self.engine.add_rule
+        try:
+            add(prerequisites, consequence)
+        except (InvalidRule, Inconsistent) as error:
+            feedback.set(str(error))
+            return
+        self._show(self.show_updated_recommendation)
 
     # -- Screen 3: break a recommendation down into context/goal/action -----
 

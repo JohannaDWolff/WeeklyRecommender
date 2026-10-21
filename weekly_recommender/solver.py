@@ -4,7 +4,7 @@ answer sets as structured `clingo.Symbol` objects instead of raw strings.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Sequence
+from typing import Callable, Iterable, Sequence
 
 import clingo
 
@@ -47,9 +47,15 @@ class AnswerSet:
         return "".join(f"{symbol}. " for symbol in self.symbols)
 
 
-def solve(background: str, program: str) -> list[AnswerSet]:
-    """Ground and solve `background + program`, returning every answer set."""
-    control = clingo.Control(["0"])
+def solve(
+    background: str,
+    program: str,
+    logger: Callable[[clingo.MessageCode, str], None] | None = None,
+) -> list[AnswerSet]:
+    """Ground and solve `background + program`, returning every answer set.
+    clingo's warnings and errors go to `logger` if given (instead of being
+    printed to stderr)."""
+    control = clingo.Control(["0"], logger=logger)
     control.add("base", [], background)
     control.add("base", [], program)
     control.ground([("base", [])])

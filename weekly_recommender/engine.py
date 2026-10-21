@@ -82,7 +82,12 @@ class EngineState(NamedTuple):
     context_facts: list[str]
     goal_facts: list[str]
     action_facts: list[str]
-    hard_rules: list[tuple[str, str]]
+    context_knowledge: list[tuple[str, str]]
+    goal_knowledge: list[tuple[str, str]]
+    action_knowledge: list[tuple[str, str]]
+    context_defaults: list[tuple[str, str]]
+    goal_defaults: list[tuple[str, str]]
+    action_defaults: list[tuple[str, str]]
     context_preferences: list[str]
     goal_preferences: list[str]
     action_preferences: list[str]
@@ -118,6 +123,11 @@ class Inconsistent(Exception):
         self.report = report
 
 
+class InvalidRule(Exception):
+    """Raised by `add_rule` when the entered text isn't a usable clingo rule
+    (empty prerequisites, a syntax error, an unsafe variable, ...)."""
+
+
 def _negate(fact: str) -> str:
     return fact[1:] if fact.startswith("-") else f"-{fact}"
 
@@ -131,6 +141,17 @@ def replacement_fact(old_fact: str, new_value: str) -> str:
 
 
 _NEG_PREFIX = "neg__"
+
+# A classical-negation `-` directly before an atom - not a minus sign in
+# arithmetic like `D-1`, which follows a word character and precedes a
+# digit or variable rather than a lowercase predicate name.
+_NEGATED_ATOM = re.compile(r"(?<![\w)])-(?=[a-z])")
+
+
+def _rename_negated(text: str) -> str:
+    """Rewrite every classically negated atom `-p(...)` in `text` as
+    `neg__p(...)` - see `RecommenderEngine._rewrite_diagnostic`."""
+    return _NEGATED_ATOM.sub(_NEG_PREFIX, text)
 
 
 def split_body(body: str) -> list[str]:
@@ -165,6 +186,84 @@ _PREDICATE_FACTS = {
     "dailygoal": "goal_facts",
     "dailyaction": "action_facts",
 }
+
+
+# Which knowledge category a rule belongs in, by its consequence's predicate
+# - see `_rule_category`.
+_PREDICATE_CATEGORIES = {
+    "dailyenergylevel": "context",
+    "dailyweather": "context",
+    "dailyfriendavailable": "context",
+    "dailygoal": "goal",
+    "achieves": "goal",
+    "achieved": "goal",
+    "dailyaction": "action",
+}
+
+_STAGE_ORDER = ["context", "goal", "action"]
+
+
+def _rule_category(head: str, body: str) -> str:
+    """The knowledge list (`context`, `goal` or `action`) a user-entered
+    rule is filed under: its consequence's category if that's a known
+    predicate, otherwise the latest stage any prerequisite refers to, and
+    `action` if nothing matches. Every hard rule is in scope for every
+    solving stage anyway, so this only decides where the rule is kept."""
+    if head:
+        category = _PREDICATE_CATEGORIES.get(_predicate_args(head)[0])
+        if category is not None:
+            return category
+    body_categories = {
+        _PREDICATE_CATEGORIES.get(_predicate_args(term.removeprefix("not "))[0])
+        for term in split_body(body)
+    }
+    for category in reversed(_STAGE_ORDER):
+        if category in body_categories:
+            return category
+    return "action"
+
+
+def _normalise_rule(prerequisites: str, consequence: str) -> tuple[str, str]:
+    """The (head, body) of a rule typed into the GUI, without surrounding
+    whitespace or a trailing `.`."""
+    body = prerequisites.strip().rstrip(".").strip()
+    head = consequence.strip().rstrip(".").strip()
+    if not body:
+        raise InvalidRule("Please enter at least one prerequisite.")
+    return head, body
+
+
+def _is_default_rule(head: str, body: str) -> bool:
+    """Whether `head :- body` is a default rule: one that only applies when
+    the opposite of its consequence isn't known, i.e. `not -<head>` (or
+    `not <atom>` for a negated head `-<atom>`) is among its prerequisites."""
+    expected = re.sub(r"\s", "", _negate(head))
+    return any(
+        term.startswith("not ") and re.sub(r"\s", "", term[4:]) == expected
+        for term in split_body(body)
+    )
+
+
+def _solve_checked(background: str, program: str) -> list[AnswerSet]:
+    """`solve`, but a clingo error (syntax error, unsafe variable, ...) in
+    a rule the user typed is raised as `InvalidRule` carrying clingo's own
+    explanation."""
+    messages: list[str] = []
+    try:
+        return solve(background, program, logger=lambda _code, message: messages.append(message))
+    except RuntimeError as error:
+        # clingo prefixes each message with a `<block>:line:col:` location
+        # into the combined program text, which is meaningless to the user
+        # - keep only what follows.
+        details = " ".join(
+            re.sub(r"(?m)^\s*<block>:[\d:-]+:\s*", "", message)
+            .replace("[#inc_base];", "")
+            .replace("\n", " ")
+            .strip()
+            for message in messages
+            if "error" in message
+        ) or str(error)
+        raise InvalidRule(f"That isn't a valid clingo rule: {details}") from error
 
 
 def _parse_sort(definition: str) -> tuple[str, list[str]]:
@@ -210,12 +309,29 @@ class RecommenderEngine:
     context_facts: list[str] = field(default_factory=lambda: list(domain.DEFAULT_CONTEXT_FACTS))
     goal_facts: list[str] = field(default_factory=lambda: list(domain.DEFAULT_GOAL_FACTS))
     action_facts: list[str] = field(default_factory=lambda: list(domain.DEFAULT_ACTION_FACTS))
-    # All non-default ("hard") rules, mutable so any of them can be removed
-    # as a conflict-resolution option - not just the goal ones, as before.
-    hard_rules: list[tuple[str, str]] = field(
-        default_factory=lambda: list(
-            domain.CONTEXT_KNOWLEDGE + domain.GOAL_KNOWLEDGE + domain.ACTION_KNOWLEDGE
-        )
+    # The non-default ("hard") rules, mutable so any of them can be removed
+    # as a conflict-resolution option, and new ones added from the GUI's
+    # "General correction" screen - see `add_rule`.
+    context_knowledge: list[tuple[str, str]] = field(
+        default_factory=lambda: list(domain.CONTEXT_KNOWLEDGE)
+    )
+    goal_knowledge: list[tuple[str, str]] = field(
+        default_factory=lambda: list(domain.GOAL_KNOWLEDGE)
+    )
+    action_knowledge: list[tuple[str, str]] = field(
+        default_factory=lambda: list(domain.ACTION_KNOWLEDGE)
+    )
+    # The default (soft) rules and integrity constraints applied in each
+    # solving stage, mutable so new ones can be added from the GUI too -
+    # see `add_default`.
+    context_defaults: list[tuple[str, str]] = field(
+        default_factory=lambda: list(domain.CONTEXT_DEFAULTS)
+    )
+    goal_defaults: list[tuple[str, str]] = field(
+        default_factory=lambda: list(domain.GOAL_DEFAULTS)
+    )
+    action_defaults: list[tuple[str, str]] = field(
+        default_factory=lambda: list(domain.ACTION_DEFAULTS)
     )
     context_preferences: list[str] = field(
         default_factory=lambda: list(domain.CONTEXT_PREFERENCES)
@@ -233,6 +349,11 @@ class RecommenderEngine:
     goal_answer_sets: list[AnswerSet] = field(default_factory=list, init=False)
     action_answer_sets: list[AnswerSet] = field(default_factory=list, init=False)
 
+    @property
+    def hard_rules(self) -> list[tuple[str, str]]:
+        """All hard rules, regardless of category."""
+        return self.context_knowledge + self.goal_knowledge + self.action_knowledge
+
     # -- Snapshot/restore, for the GUI's back button to undo mutations -----
 
     def snapshot(self) -> EngineState:
@@ -240,7 +361,12 @@ class RecommenderEngine:
             context_facts=list(self.context_facts),
             goal_facts=list(self.goal_facts),
             action_facts=list(self.action_facts),
-            hard_rules=list(self.hard_rules),
+            context_knowledge=list(self.context_knowledge),
+            goal_knowledge=list(self.goal_knowledge),
+            action_knowledge=list(self.action_knowledge),
+            context_defaults=list(self.context_defaults),
+            goal_defaults=list(self.goal_defaults),
+            action_defaults=list(self.action_defaults),
             context_preferences=list(self.context_preferences),
             goal_preferences=list(self.goal_preferences),
             action_preferences=list(self.action_preferences),
@@ -257,7 +383,12 @@ class RecommenderEngine:
         self.context_facts = list(state.context_facts)
         self.goal_facts = list(state.goal_facts)
         self.action_facts = list(state.action_facts)
-        self.hard_rules = list(state.hard_rules)
+        self.context_knowledge = list(state.context_knowledge)
+        self.goal_knowledge = list(state.goal_knowledge)
+        self.action_knowledge = list(state.action_knowledge)
+        self.context_defaults = list(state.context_defaults)
+        self.goal_defaults = list(state.goal_defaults)
+        self.action_defaults = list(state.action_defaults)
         self.context_preferences = list(state.context_preferences)
         self.goal_preferences = list(state.goal_preferences)
         self.action_preferences = list(state.action_preferences)
@@ -309,7 +440,7 @@ class RecommenderEngine:
 
         context_sets = solve(
             self._hard_rules_text() + self.knowledge_solution.as_program(),
-            render_rules(domain.CONTEXT_DEFAULTS) + "#defined dailyaction/2. ",
+            render_rules(self.context_defaults) + "#defined dailyaction/2. ",
         )
         if not context_sets:
             raise Inconsistent("No consistent context defaults.")
@@ -318,7 +449,7 @@ class RecommenderEngine:
 
         goal_sets = solve(
             self._hard_rules_text() + self.context_solution.as_program(),
-            render_rules(domain.GOAL_DEFAULTS) + "#defined dailyaction/2. ",
+            render_rules(self.goal_defaults) + "#defined dailyaction/2. ",
         )
         if not goal_sets:
             raise Inconsistent("No consistent goal defaults.")
@@ -327,7 +458,7 @@ class RecommenderEngine:
 
         action_sets = solve(
             self._hard_rules_text() + self.goal_solution.as_program(),
-            render_rules(domain.ACTION_DEFAULTS) + render_rules(domain.OUTPUT_FORMATTING_RULES),
+            render_rules(self.action_defaults) + render_rules(domain.OUTPUT_FORMATTING_RULES),
         )
         if not action_sets:
             raise Inconsistent("No consistent action defaults.")
@@ -495,7 +626,57 @@ class RecommenderEngine:
         return None
 
     def remove_rule(self, rule: tuple[str, str]) -> None:
-        self.hard_rules.remove(rule)
+        for category in _STAGE_ORDER:
+            rules = getattr(self, f"{category}_knowledge")
+            if rule in rules:
+                rules.remove(rule)
+                return
+        raise ValueError(f"unknown rule: {rule!r}")
+
+    def add_rule(self, prerequisites: str, consequence: str) -> str:
+        """Add the hard rule `consequence :- prerequisites.`, after checking
+        it's valid clingo and doesn't make the knowledge base contradictory.
+        An empty consequence makes it an integrity constraint. Returns the
+        category (see `_rule_category`) it was filed under."""
+        rule = head, body = _normalise_rule(prerequisites, consequence)
+        results = _solve_checked(
+            self._hard_rules_text() + render_rules([rule]), self._knowledge_base_program()
+        )
+        if not results:
+            raise Inconsistent("Adding this rule makes the knowledge base contradictory.")
+
+        category = _rule_category(head, body)
+        getattr(self, f"{category}_knowledge").append(rule)
+        return category
+
+    def add_default(self, prerequisites: str, consequence: str) -> str:
+        """Add the soft (default) rule `consequence :- prerequisites.` to the
+        defaults of the stage its consequence belongs to (see
+        `_rule_category`), after checking it really is a default rule (see
+        `_is_default_rule`), that it's valid clingo, and that the pipeline
+        still finds a consistent week with it. Returns the category."""
+        rule = head, body = _normalise_rule(prerequisites, consequence)
+        if not head:
+            raise InvalidRule("A soft rule needs a consequence.")
+        if not _is_default_rule(head, body):
+            raise InvalidRule(
+                "This is a hard rule, not a soft one: a soft (default) rule only "
+                "applies when nothing says otherwise, so its prerequisites must "
+                f"include `not {_negate(head)}`. Add that, or select \"Hard rule\" instead."
+            )
+        # Checked on its own first: the pipeline's solves would only print
+        # clingo's error messages to stderr.
+        _solve_checked(render_rules([rule]), "")
+
+        category = _rule_category(head, body)
+        before = self.snapshot()
+        getattr(self, f"{category}_defaults").append(rule)
+        try:
+            self.run_pipeline()
+        except Inconsistent as error:
+            self.restore(before)
+            raise Inconsistent(f"With this rule there's no consistent week: {error}") from error
+        return category
 
     # -- Explaining a default value that lost to preference ranking --------
 
@@ -666,28 +847,20 @@ class RecommenderEngine:
     # -- Diagnosing a contradiction: which ground atom clashes, and which --
     # -- rule derives each side of it. ---------------------------------------
     #
-    # The hard-knowledge rules never reference a classically negated atom in
-    # a *body* (only in a head), which is asserted in `_rewrite_diagnostic`
-    # below. That means renaming every negated head (`-p(...)`) to a fresh,
-    # unnegated predicate (`neg__p(...)`) turns them into a plain stratified
-    # Datalog program - no classical negation left to clash - which always
-    # has exactly one answer set, even over facts that are contradictory
-    # under the real rules. This rewrite is only ever used to build a
-    # disposable copy of the rules for one throwaway diagnostic solve; the
-    # live rule set (`self.hard_rules`) is never touched.
+    # Renaming every classically negated atom (`-p(...)`), in heads and
+    # bodies alike, to a fresh, unnegated predicate (`neg__p(...)`) leaves
+    # no classical negation to clash. As long as the hard rules use no
+    # default negation (`not`) - true of the built-in ones, though a rule
+    # the user added via `add_rule` could break this - that's a plain
+    # stratified Datalog program with exactly one answer set, even over
+    # facts that are contradictory under the real rules. This rewrite is
+    # only ever used to build a disposable copy of the rules for one
+    # throwaway diagnostic solve; the live rule lists are never touched.
 
     def _rewrite_diagnostic(self, rules: list[tuple[str, str]]) -> list[tuple[str, str]]:
         rewritten = []
         for head, body in rules:
-            for term in split_body(body):
-                assert not term.startswith("-"), (
-                    "diagnostic rewrite assumes rule bodies never reference a "
-                    f"classically negated atom, but {head!r} has {term!r} in its body"
-                )
-            stripped_head = head.strip()
-            if stripped_head.startswith("-"):
-                head = _NEG_PREFIX + stripped_head[1:]
-            rewritten.append((head, body))
+            rewritten.append((_rename_negated(head), _rename_negated(body)))
         return rewritten
 
     def _diagnostic_hard_rules(self) -> list[tuple[str, str]]:
