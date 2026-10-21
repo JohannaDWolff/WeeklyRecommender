@@ -42,8 +42,8 @@ ACTION_DEFINITIONS = [
     "running;yoga;knittingalone;tv;reading;meditating;painting;journaling;laundry;"
     "cleankitchen;cleanbathroom;vacuum)",
     "socialactivity(pubquiz;knittingclub;gamenight;dinnerwithfriend;karaoke)",
-    "exerciseactivity(swimming;running;yoga)",
-    "restingactivity(yoga;tv;reading;meditating)",
+    "exerciseactivity(swimming;running;yoga;strengthtraining)",
+    "restingactivity(tv;reading;meditating)",
     "creativeactivity(knittingalone;painting;journaling)",
     "choreactivity(laundry;cleankitchen;cleanbathroom;vacuum)",
 ]
@@ -113,6 +113,7 @@ CONTEXT_DEFAULTS = [
     ("dailyweather(D,good)", "daynumber(D), not -dailyweather(D,good)"),
     ("dailyfriendavailable(D,false)", "daynumber(D), not dailyfriendavailable(D,true)"),
 ]
+
 
 GOAL_DEFAULTS = [
     (
