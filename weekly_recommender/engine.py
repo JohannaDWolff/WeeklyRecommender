@@ -724,6 +724,31 @@ class RecommenderEngine:
         solver order - see `PreferenceExplanation.tie`)."""
         getattr(self, f"{category}_preferences").insert(0, fact)
 
+    def add_preference(self, category: str, preference: str) -> None:
+        """Add `preference` (an atom, e.g. `dailygoal(4,exercising)` or
+        `-dailyaction(6,tv)`) as this stage's top priority. Preferences only
+        rank answer sets, so unlike rules they can't make a week
+        inconsistent."""
+        preference = preference.strip()
+        try:
+            clingo.parse_term(preference)
+        except RuntimeError as error:
+            raise InvalidRule(f"`{preference}` is not a valid preference.") from error
+        if preference in getattr(self, f"{category}_preferences"):
+            raise InvalidRule(f"`{preference}` is already a preference.")
+        self.prefer(category, preference)
+
+    def remove_preference(self, category: str, preference: str) -> None:
+        getattr(self, f"{category}_preferences").remove(preference)
+
+    def move_preference(self, category: str, preference: str, offset: int) -> None:
+        """Move `preference` `offset` places down the priority list (negative
+        = up), stopping at either end."""
+        preferences = getattr(self, f"{category}_preferences")
+        index = preferences.index(preference)
+        target = max(0, min(len(preferences) - 1, index + offset))
+        preferences.insert(target, preferences.pop(index))
+
     # -- Editing the fact base -------------------------------------------
 
     def remove_fact(self, category: str, fact: str) -> None:

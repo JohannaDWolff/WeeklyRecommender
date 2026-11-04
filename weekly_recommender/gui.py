@@ -59,6 +59,21 @@ COLORS = {
 
 FONT_FAMILY = "Helvetica"
 
+PREFERENCE_CATEGORIES = ("context", "goal", "action")
+
+# The fact predicates a preference can be about, per category.
+PREFERENCE_PREDICATES = {
+    "context": domain.CONTEXT_FACTORS,
+    "goal": ["dailygoal"],
+    "action": ["dailyaction"],
+}
+_PREDICATE_LABELS = {
+    **domain.CONTEXT_FACTOR_LABELS,
+    "dailygoal": "goal",
+    "dailyaction": "action",
+}
+_PREDICATES_BY_LABEL = {label: name for name, label in _PREDICATE_LABELS.items()}
+
 
 def _configure_style(root: Tk) -> None:
     root.configure(background=COLORS["background"])
@@ -326,10 +341,38 @@ class RowLayout:
 
         button = ttk.Button(self.frame, command=toggle, style="Toggle.TButton")
         button.grid(column=1, row=self.row, sticky=W, pady=(0, 2))
-        body.grid(column=1, row=self.row + 1, sticky=W, padx=(20, 0))
+        body.grid(column=1, row=self.row + 1, sticky=(W, E), padx=(20, 0))
         refresh()
         self.row += 2
         return body
+
+    def preference_row(
+        self,
+        index: int,
+        text: str,
+        on_remove: Callable[[], None],
+        on_up: Callable[[], None] | None,
+        on_down: Callable[[], None] | None,
+    ) -> ttk.Frame:
+        """A numbered preference: click the text to remove it, ▲/▼ to move it
+        (each disabled when there's nowhere to go)."""
+        row_frame = ttk.Frame(self.frame)
+        # Stretched to the widest row, so the arrows packed to the right
+        # line up in one column.
+        row_frame.grid(column=1, row=self.row, sticky=(W, E), pady=(0, 4))
+        ttk.Label(row_frame, text=f"{index}.", width=3).pack(side="left")
+        ttk.Button(row_frame, text=text, command=on_remove).pack(side="left", padx=(0, 6))
+        # Packed right-to-left, so ▲ ends up to the left of ▼.
+        for symbol, command in (("▼", on_down), ("▲", on_up)):
+            ttk.Button(
+                row_frame,
+                text=symbol,
+                command=command,
+                style="Toggle.TButton",
+                state="normal" if command else "disabled",
+            ).pack(side="right")
+        self.row += 1
+        return row_frame
 
     def scroll_area(self, max_height: int = 380) -> ttk.Frame:
         """A vertically scrollable region; returns the frame to put content
@@ -398,8 +441,9 @@ class App:
         self._history: list[tuple[Callable[[], None], EngineState]] = []
         self._current_render: Callable[[], None] | None = None
         self._current_snapshot: EngineState | None = None
-        # Open sections on the "Show rules" screen, e.g. ("goal",) or ("goal", "hard").
-        self._expanded_rule_sections: set[tuple[str, ...]] = set()
+        # Open sections on the "Show rules" / "Show preferences" screens, e.g.
+        # ("goal",), ("goal", "hard") or ("preferences", "goal").
+        self._expanded_sections: set[tuple[str, ...]] = set()
         self._show(lambda: self.show_recommendations(self.engine.recommend()))
 
     def run(self) -> None:
@@ -477,7 +521,7 @@ class App:
 
         for rec in self.engine.recommend():
             layout.button(
-                f"{rec.day}: {rec.action} for {rec.goal}",
+                f"{rec.day.capitalize()}: {rec.action} for {rec.goal}",
                 command=lambda rec=rec: self._show(lambda: self.show_explanation(rec)),
             )
 
@@ -486,6 +530,7 @@ class App:
             command=lambda: self._show(self.show_general_correction),
         )
         layout.button("Show rules", command=self.open_rules)
+        layout.button("Show preferences", command=self.open_preferences)
 
     # -- Screen 2b: a correction that applies to the whole week -------------
 
@@ -526,7 +571,7 @@ class App:
     # -- Screen 2c: browse and remove the currently active rules ------------
 
     def open_rules(self) -> None:
-        self._expanded_rule_sections.clear()
+        self._expanded_sections.clear()
         self._show(self.show_rules)
 
     def show_rules(self) -> None:
@@ -537,11 +582,11 @@ class App:
         area = RowLayout(layout.scroll_area())
         for category in ("context", "goal", "action"):
             category_layout = RowLayout(
-                self._rule_section(area, category.capitalize(), (category,))
+                self._section(area, category.capitalize(), (category,))
             )
             for kind, title in (("hard", "Hard rules"), ("soft", "Soft rules")):
                 kind_layout = RowLayout(
-                    self._rule_section(category_layout, title, (category, kind))
+                    self._section(category_layout, title, (category, kind))
                 )
                 rules = self._visible_rules(category, kind)
                 if not rules:
@@ -552,17 +597,17 @@ class App:
                         command=lambda kind=kind, rule=rule: self.remove_listed_rule(kind, rule),
                     )
 
-    def _rule_section(self, layout: RowLayout, title: str, key: tuple[str, ...]) -> ttk.Frame:
+    def _section(self, layout: RowLayout, title: str, key: tuple[str, ...]) -> ttk.Frame:
         """A collapsible section whose open/closed state survives re-renders
         of the screen (e.g. coming back to it with Back)."""
 
         def remember(is_open: bool) -> None:
             if is_open:
-                self._expanded_rule_sections.add(key)
+                self._expanded_sections.add(key)
             else:
-                self._expanded_rule_sections.discard(key)
+                self._expanded_sections.discard(key)
 
-        return layout.collapsible(title, key in self._expanded_rule_sections, remember)
+        return layout.collapsible(title, key in self._expanded_sections, remember)
 
     def _visible_rules(self, category: str, kind: str) -> list[tuple[str, str]]:
         rules = getattr(self.engine, f"{category}_{'knowledge' if kind == 'hard' else 'defaults'}")
@@ -581,6 +626,110 @@ class App:
         else:
             self.engine.remove_default(rule)
         self._show(self.show_updated_recommendation)
+
+    # -- Screen 2d: view, reorder, remove and add preferences ---------------
+
+    def open_preferences(self) -> None:
+        self._expanded_sections.clear()
+        self._show(self.show_preferences)
+
+    # Edits on this screen re-render it in place (`show_preferences()`, not
+    # `_show`), so several can be made in a row and Back undoes all of them.
+    def show_preferences(self) -> None:
+        layout = self._new_frame()
+        layout.heading("Active preferences")
+        layout.muted("Higher in the list = higher priority. Click a preference to remove it.")
+
+        area = RowLayout(layout.scroll_area(max_height=260))
+        for category in PREFERENCE_CATEGORIES:
+            body = RowLayout(
+                self._section(area, category.capitalize(), ("preferences", category))
+            )
+            preferences = getattr(self.engine, f"{category}_preferences")
+            if not preferences:
+                body.muted("There are no preferences.")
+            for index, preference in enumerate(preferences):
+                body.preference_row(
+                    index + 1,
+                    preference,
+                    on_remove=lambda category=category, preference=preference: self._edit_preferences(
+                        self.engine.remove_preference, category, preference
+                    ),
+                    on_up=None if index == 0 else (
+                        lambda category=category, preference=preference: self._edit_preferences(
+                            self.engine.move_preference, category, preference, -1
+                        )
+                    ),
+                    on_down=None if index == len(preferences) - 1 else (
+                        lambda category=category, preference=preference: self._edit_preferences(
+                            self.engine.move_preference, category, preference, 1
+                        )
+                    ),
+                )
+
+        self._add_preference_form(layout)
+        layout.button(
+            "Show updated recommendation",
+            command=lambda: self._show(self.show_updated_recommendation),
+            style="Accent.TButton",
+        )
+
+    def _edit_preferences(self, edit: Callable[..., None], *args) -> None:
+        edit(*args)
+        self.show_preferences()
+
+    def _add_preference_form(self, layout: RowLayout) -> None:
+        layout.section("Add preference")
+        category = StringVar(value=PREFERENCE_CATEGORIES[0].capitalize())
+        fact_type = StringVar()
+        day = StringVar(value=domain.DAY_NAMES[1].capitalize())
+        value = StringVar()
+        mode = StringVar(value="prefer")
+        feedback = StringVar()
+
+        category_box = layout.combobox(
+            category, [name.capitalize() for name in PREFERENCE_CATEGORIES], width=24
+        )
+        type_box = layout.combobox(fact_type, [], width=24)
+        layout.combobox(day, [name.capitalize() for name in domain.DAY_NAMES.values()], width=24)
+        value_box = layout.combobox(value, [], width=24)
+        layout.radio_buttons(mode, [("Prefer", "prefer"), ("Avoid", "avoid")])
+
+        def predicate() -> str:
+            return _PREDICATES_BY_LABEL[fact_type.get()]
+
+        def refresh_values(_event=None) -> None:
+            options = FACT_VALUE_OPTIONS[predicate()]
+            value_box.configure(values=options)
+            value.set(options[0])
+
+        def refresh_types(_event=None) -> None:
+            labels = [
+                _PREDICATE_LABELS[name]
+                for name in PREFERENCE_PREDICATES[category.get().lower()]
+            ]
+            type_box.configure(values=labels)
+            fact_type.set(labels[0])
+            refresh_values()
+
+        category_box.bind("<<ComboboxSelected>>", refresh_types)
+        type_box.bind("<<ComboboxSelected>>", refresh_values)
+        refresh_types()
+
+        def add() -> None:
+            atom = (
+                f"{'-' if mode.get() == 'avoid' else ''}{predicate()}"
+                f"({domain.DAY_NUMBERS[day.get().lower()]},{value.get()})"
+            )
+            try:
+                self.engine.add_preference(category.get().lower(), atom)
+            except InvalidRule as error:
+                feedback.set(str(error))
+                return
+            self.show_preferences()
+
+        layout.button("Add", command=add)
+        layout.label_var(feedback, style="Warning.TLabel")
 
     # -- Screen 3: break a recommendation down into context/goal/action -----
 
