@@ -633,6 +633,14 @@ class RecommenderEngine:
                 return
         raise ValueError(f"unknown rule: {rule!r}")
 
+    def remove_default(self, rule: tuple[str, str]) -> None:
+        for category in _STAGE_ORDER:
+            rules = getattr(self, f"{category}_defaults")
+            if rule in rules:
+                rules.remove(rule)
+                return
+        raise ValueError(f"unknown default rule: {rule!r}")
+
     def add_rule(self, prerequisites: str, consequence: str) -> str:
         """Add the hard rule `consequence :- prerequisites.`, after checking
         it's valid clingo and doesn't make the knowledge base contradictory.

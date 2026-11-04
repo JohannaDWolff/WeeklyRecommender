@@ -13,7 +13,7 @@ every platform - macOS's native "aqua" theme silently ignores them.
 """
 from __future__ import annotations
 
-from tkinter import N, S, E, W, StringVar, Tk
+from tkinter import Canvas, N, S, E, W, StringVar, TclError, Tk
 from tkinter import ttk
 from typing import Callable
 
@@ -158,6 +158,18 @@ def _configure_style(root: Tk) -> None:
     style.map("Back.TButton", foreground=[("active", COLORS["text"])])
 
     style.configure(
+        "Toggle.TButton",
+        font=(FONT_FAMILY, 11, "bold"),
+        foreground=COLORS["text"],
+        background=COLORS["background"],
+        padding=(4, 4),
+        borderwidth=0,
+        anchor="w",
+        width=0,  # clam gives buttons a minimum width, which centers short text
+    )
+    style.map("Toggle.TButton", background=[("active", COLORS["border"])])
+
+    style.configure(
         "TEntry",
         padding=(6, 4),
         fieldbackground=COLORS["surface"],
@@ -291,6 +303,72 @@ class RowLayout:
         self.row += 1
         return row_frame
 
+    def collapsible(
+        self, title: str, expanded: bool, on_toggle: Callable[[bool], None]
+    ) -> ttk.Frame:
+        """A toggle button that shows/hides the returned body frame, which
+        the caller fills (typically with a nested RowLayout)."""
+        body = ttk.Frame(self.frame)
+        is_open = expanded
+
+        def refresh() -> None:
+            button.configure(text=f"{'▾' if is_open else '▸'} {title}")
+            if is_open:
+                body.grid()
+            else:
+                body.grid_remove()
+
+        def toggle() -> None:
+            nonlocal is_open
+            is_open = not is_open
+            refresh()
+            on_toggle(is_open)
+
+        button = ttk.Button(self.frame, command=toggle, style="Toggle.TButton")
+        button.grid(column=1, row=self.row, sticky=W, pady=(0, 2))
+        body.grid(column=1, row=self.row + 1, sticky=W, padx=(20, 0))
+        refresh()
+        self.row += 2
+        return body
+
+    def scroll_area(self, max_height: int = 380) -> ttk.Frame:
+        """A vertically scrollable region; returns the frame to put content
+        in. It grows with its content up to `max_height`, then scrolls."""
+        container = ttk.Frame(self.frame)
+        container.grid(column=1, row=self.row, columnspan=2, sticky=W, pady=(4, 0))
+        canvas = Canvas(container, background=COLORS["background"], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.grid(column=0, row=0)
+        inner = ttk.Frame(canvas)
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def resize(_event=None) -> None:
+            needs_scroll = inner.winfo_reqheight() > max_height
+            canvas.configure(
+                scrollregion=(0, 0, inner.winfo_reqwidth(), inner.winfo_reqheight()),
+                width=inner.winfo_reqwidth(),
+                height=min(inner.winfo_reqheight(), max_height),
+            )
+            if needs_scroll:
+                scrollbar.grid(column=1, row=0, sticky=(N, S))
+            else:
+                scrollbar.grid_remove()
+                canvas.yview_moveto(0)
+
+        def on_wheel(event) -> None:
+            try:
+                if inner.winfo_reqheight() > max_height:
+                    canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+            except TclError:  # the screen was replaced while the wheel was bound
+                pass
+
+        inner.bind("<Configure>", resize)
+        canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", on_wheel))
+        canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
+        self.row += 1
+        return inner
+
     def combobox(
         self, textvariable: StringVar, values: list[str], width: int = 81, fill: bool = False
     ) -> ttk.Combobox:
@@ -320,6 +398,8 @@ class App:
         self._history: list[tuple[Callable[[], None], EngineState]] = []
         self._current_render: Callable[[], None] | None = None
         self._current_snapshot: EngineState | None = None
+        # Open sections on the "Show rules" screen, e.g. ("goal",) or ("goal", "hard").
+        self._expanded_rule_sections: set[tuple[str, ...]] = set()
         self._show(lambda: self.show_recommendations(self.engine.recommend()))
 
     def run(self) -> None:
@@ -405,6 +485,7 @@ class App:
             "General correction",
             command=lambda: self._show(self.show_general_correction),
         )
+        layout.button("Show rules", command=self.open_rules)
 
     # -- Screen 2b: a correction that applies to the whole week -------------
 
@@ -440,6 +521,65 @@ class App:
         except (InvalidRule, Inconsistent) as error:
             feedback.set(str(error))
             return
+        self._show(self.show_updated_recommendation)
+
+    # -- Screen 2c: browse and remove the currently active rules ------------
+
+    def open_rules(self) -> None:
+        self._expanded_rule_sections.clear()
+        self._show(self.show_rules)
+
+    def show_rules(self) -> None:
+        layout = self._new_frame()
+        layout.heading("Active rules")
+        layout.muted("Expand a section, then click a rule to remove it.")
+
+        area = RowLayout(layout.scroll_area())
+        for category in ("context", "goal", "action"):
+            category_layout = RowLayout(
+                self._rule_section(area, category.capitalize(), (category,))
+            )
+            for kind, title in (("hard", "Hard rules"), ("soft", "Soft rules")):
+                kind_layout = RowLayout(
+                    self._rule_section(category_layout, title, (category, kind))
+                )
+                rules = self._visible_rules(category, kind)
+                if not rules:
+                    kind_layout.muted("There are no such rules.")
+                for rule in rules:
+                    kind_layout.button(
+                        self._format_rule(rule),
+                        command=lambda kind=kind, rule=rule: self.remove_listed_rule(kind, rule),
+                    )
+
+    def _rule_section(self, layout: RowLayout, title: str, key: tuple[str, ...]) -> ttk.Frame:
+        """A collapsible section whose open/closed state survives re-renders
+        of the screen (e.g. coming back to it with Back)."""
+
+        def remember(is_open: bool) -> None:
+            if is_open:
+                self._expanded_rule_sections.add(key)
+            else:
+                self._expanded_rule_sections.discard(key)
+
+        return layout.collapsible(title, key in self._expanded_rule_sections, remember)
+
+    def _visible_rules(self, category: str, kind: str) -> list[tuple[str, str]]:
+        rules = getattr(self.engine, f"{category}_{'knowledge' if kind == 'hard' else 'defaults'}")
+        # `achieves` rules are plumbing mapping activity types to goals, not
+        # something for the user to correct.
+        return [rule for rule in rules if not rule[0].startswith("achieves(")]
+
+    @staticmethod
+    def _format_rule(rule: tuple[str, str]) -> str:
+        head, body = rule
+        return f"{body} implies {head}" if head else f"{body} is not allowed"
+
+    def remove_listed_rule(self, kind: str, rule: tuple[str, str]) -> None:
+        if kind == "hard":
+            self.engine.remove_rule(rule)
+        else:
+            self.engine.remove_default(rule)
         self._show(self.show_updated_recommendation)
 
     # -- Screen 3: break a recommendation down into context/goal/action -----
