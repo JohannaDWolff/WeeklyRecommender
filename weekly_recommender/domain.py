@@ -120,9 +120,10 @@ GOAL_DEFAULTS = [
         "dailygoal(D,G)",
         "daynumber(D), goal(G), not -dailygoal(D,G), achieves(G,A), not -dailyaction(D,A)",
     ),
-    # Soft quota: reified as an atom and ranked first in GOAL_PREFERENCES, so a
-    # week that cannot have exactly 2 chore days still gets a recommendation.
-    ("chorequota_met", "2 = #count{ D : dailygoal(D,chores) }"),
+
+    # Soft cap (at least 2 chore days), reified as an atom and ranked first in GOAL_PREFERENCES.
+    ("chorequota_met", "{ dailygoal(D,chores) : daynumber(D) } >= 2"),
+
     # Soft cap (at most 2 socialising days), reified like the chores quota.
     ("socialquota_met", "{ dailygoal(D,socialising) : daynumber(D) } <= 2"),
 ]

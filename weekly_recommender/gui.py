@@ -18,6 +18,7 @@ from tkinter import ttk
 from typing import Callable
 
 import domain
+from verbalize import describe_rule, verbalize_atom, verbalize_preference
 from engine import (
     ConflictOption,
     EngineState,
@@ -41,6 +42,26 @@ def _format_context_fact(symbol) -> str:
     factor."""
     label = domain.CONTEXT_FACTOR_LABELS.get(symbol.name, symbol.name)
     return f"{label}: {symbol.arguments[1]}"
+
+
+# What the value dropdown picks, per fact predicate - see `_new_value_prompt`.
+_VALUE_NOUNS = {
+    "dailyenergylevel": "energy level",
+    "dailyweather": "weather",
+    "dailyfriendavailable": "friend availability",
+    "dailygoal": "goal",
+    "dailyaction": "activity",
+}
+
+
+def _new_value_prompt(old_fact: str) -> str:
+    """The label above a replacement-value dropdown, e.g. "New activity on
+    Tuesday:" for `dailyaction(2,swimming)`."""
+    predicate, _, args = old_fact.lstrip("-").partition("(")
+    noun = _VALUE_NOUNS.get(predicate, "value")
+    day = args.split(",")[0]
+    day_name = domain.DAY_NAMES.get(int(day)) if day.isdigit() else None
+    return f"New {noun} on {day_name.capitalize()}:" if day_name else f"New {noun}:"
 
 
 COLORS = {
@@ -617,8 +638,7 @@ class App:
 
     @staticmethod
     def _format_rule(rule: tuple[str, str]) -> str:
-        head, body = rule
-        return f"{body} implies {head}" if head else f"{body} is not allowed"
+        return describe_rule(rule)
 
     def remove_listed_rule(self, kind: str, rule: tuple[str, str]) -> None:
         if kind == "hard":
@@ -651,7 +671,7 @@ class App:
             for index, preference in enumerate(preferences):
                 body.preference_row(
                     index + 1,
-                    preference,
+                    verbalize_preference(preference),
                     on_remove=lambda category=category, preference=preference: self._edit_preferences(
                         self.engine.remove_preference, category, preference
                     ),
@@ -813,10 +833,9 @@ class App:
             self._offer_new_fact(layout, "action", fact)
 
     def _show_rule_explanation(self, layout: RowLayout, explanation: Explanation) -> None:
-        head, body = explanation.rule
-        layout.section(f"{explanation.fact} comes from the following rule")
+        layout.section(f"\"{verbalize_atom(explanation.fact)}\" comes from the following rule")
         layout.button(
-            f"{body} implies {head}",
+            describe_rule(explanation.rule),
             command=lambda: self.remove_rule(explanation.rule),
             style="Danger.TButton",
         )
@@ -827,7 +846,7 @@ class App:
         layout.section("and the following prerequisites")
         for prerequisite in explanation.prerequisites:
             layout.button(
-                str(prerequisite),
+                verbalize_atom(prerequisite),
                 command=lambda prerequisite=prerequisite: self._show(
                     lambda: self.show_prerequisite_problem(prerequisite)
                 ),
@@ -835,7 +854,7 @@ class App:
 
     def show_prerequisite_problem(self, symbol) -> None:
         layout = self._new_frame()
-        layout.heading(f"You disagree with the prerequisite: {symbol}")
+        layout.heading(f"You disagree with the prerequisite: {verbalize_atom(symbol)}")
 
         fact = str(symbol)
         for category in ("context", "goal", "action"):
@@ -856,8 +875,9 @@ class App:
         needs to type the new value, not the whole fact - `replacement_fact`
         rebuilds it around `old_fact`'s predicate and day."""
         layout.label("This value was filled in by default and can be changed.")
-        layout.muted(f"Currently: {old_fact}")
+        layout.muted(f"Currently: {verbalize_atom(old_fact)}")
         layout.muted("What would you prefer instead?")
+        layout.label(_new_value_prompt(old_fact))
         new_value = StringVar()
         predicate = old_fact.split("(")[0]
         layout.combobox(new_value, FACT_VALUE_OPTIONS[predicate], fill=True)
@@ -890,7 +910,8 @@ class App:
     def show_add_replacement_fact(self, category: str, old_fact: str) -> None:
         layout = self._new_frame()
         layout.heading("Would you like to add a different fact instead?")
-        layout.muted(f"Replacing: {old_fact}")
+        layout.muted(f"Replacing: {verbalize_atom(old_fact)}")
+        layout.label(_new_value_prompt(old_fact))
 
         new_value = StringVar()
         predicate = old_fact.split("(")[0]
@@ -914,7 +935,7 @@ class App:
 
     def show_preference_explanation(self, explanation: PreferenceExplanation) -> None:
         layout = self._new_frame()
-        layout.heading(f"{explanation.fact} is possible, but wasn't chosen")
+        layout.heading(f"\"{verbalize_atom(explanation.fact)}\" is possible, but wasn't chosen")
         if explanation.tie:
             layout.label(
                 "Nothing currently prefers one over the other - the current "
@@ -923,9 +944,9 @@ class App:
         else:
             layout.label(
                 f"The current pick matches the preference "
-                f"`{explanation.current_preference}`, which outranks "
+                f"\"{verbalize_preference(explanation.current_preference)}\", which outranks "
                 + (
-                    f"`{explanation.desired_preference}`."
+                    f"\"{verbalize_preference(explanation.desired_preference)}\""
                     if explanation.desired_preference
                     else "this value, which currently matches no preference at all."
                 )
@@ -992,12 +1013,11 @@ class App:
     @staticmethod
     def _conflict_option_label(option: ConflictOption) -> str:
         if isinstance(option, ProposedFact):
-            return f"Don't add: {option.fact}"
+            return f"Don't add: {verbalize_atom(option.fact)}"
         if isinstance(option, RemovableFact):
-            return f"Remove fact: {option.fact}"
+            return f"Remove fact: {verbalize_atom(option.fact)}"
         if isinstance(option, RemovableRule):
-            head, body = option.rule
-            return f"Remove rule: {body} implies {head}"
+            return f"Remove rule: {describe_rule(option.rule)}"
         raise TypeError(f"unknown conflict option: {option!r}")
 
     @staticmethod

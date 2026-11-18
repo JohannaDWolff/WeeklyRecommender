@@ -13,6 +13,7 @@ from typing import NamedTuple
 import clingo
 
 import domain
+from verbalize import describe_atom, describe_rule, verbalize_atom, verbalize_preference
 from solver import (
     AnswerSet,
     parse_preferences,
@@ -130,6 +131,11 @@ class InvalidRule(Exception):
 
 def _negate(fact: str) -> str:
     return fact[1:] if fact.startswith("-") else f"-{fact}"
+
+
+def _describe_facts(facts) -> str:
+    """Facts as a quoted, comma-separated English list, for messages."""
+    return ", ".join(f"\"{describe_atom(fact)}\"" for fact in facts)
 
 
 def replacement_fact(old_fact: str, new_value: str) -> str:
@@ -735,7 +741,7 @@ class RecommenderEngine:
         except RuntimeError as error:
             raise InvalidRule(f"`{preference}` is not a valid preference.") from error
         if preference in getattr(self, f"{category}_preferences"):
-            raise InvalidRule(f"`{preference}` is already a preference.")
+            raise InvalidRule(f"\"{verbalize_preference(preference)}\" is already a preference.")
         self.prefer(category, preference)
 
     def remove_preference(self, category: str, preference: str) -> None:
@@ -804,21 +810,25 @@ class RecommenderEngine:
                 if clingo.parse_term(existing) == negation:
                     options.append(RemovableFact(existing_category, existing))
                     return ConflictReport(
-                        message=f"{fact} contradicts the existing fact {existing}.",
+                        message=(
+                            f"\"{verbalize_atom(fact)}\" contradicts the existing fact "
+                            f"\"{describe_atom(existing)}\"."
+                        ),
                         options=options,
                     )
 
         culprits = self._find_conflicting_facts(category, fact, trial_facts)
         options.extend(culprits)
-        caused_by = f" Caused by: {', '.join(c.fact for c in culprits)}." if culprits else ""
+        caused_by = (
+            f" Caused by: {_describe_facts(c.fact for c in culprits)}." if culprits else ""
+        )
 
         rule = self._find_rule_for(negation)
         if rule is not None:
             options.append(RemovableRule(rule))
-            head, body = rule
             message = (
-                f"{fact} contradicts the rule `{body} implies {head}`, "
-                f"which already derives {negation}.{caused_by}"
+                f"\"{verbalize_atom(fact)}\" contradicts the rule \"{describe_rule(rule)}\", "
+                f"which already derives that {describe_atom(negation)}.{caused_by}"
             )
             legend = self.describe_rule_variables(rule, negation)
             if legend:
@@ -827,8 +837,8 @@ class RecommenderEngine:
 
         return ConflictReport(
             message=(
-                f"{fact} contradicts {negation}, which already holds "
-                f"in the knowledge base.{caused_by}"
+                f"\"{verbalize_atom(fact)}\" contradicts the fact that "
+                f"{describe_atom(negation)}, which already holds in the knowledge base.{caused_by}"
             ),
             options=list(dict.fromkeys(options)),
         )
@@ -849,23 +859,28 @@ class RecommenderEngine:
         culprits = self._find_conflicting_facts(category, fact, trial_facts)
         if culprits:
             lines.append(
-                f"Adding {fact} conflicts with: {', '.join(f.fact for f in culprits)}."
+                f"Adding \"{verbalize_atom(fact)}\" conflicts with: "
+                f"{_describe_facts(f.fact for f in culprits)}."
             )
             options.extend(culprits)
         else:
             lines.append(
-                f"Adding {fact} makes the knowledge base contradictory "
+                f"Adding \"{verbalize_atom(fact)}\" makes the knowledge base contradictory "
                 "(the conflict only appears when several existing facts combine)."
             )
 
         for positive, negative in self._find_contradictions(program):
             lines.append("")
-            lines.append(f"Both {positive} and {negative} end up derivable:")
+            lines.append(
+                f"Both \"{describe_atom(positive)}\" and \"{describe_atom(negative)}\" "
+                "end up derivable:"
+            )
             for target in (positive, negative):
                 rule = self._find_rule_for(target, program)
                 if rule is not None:
                     lines.append(
-                        f"\n{target} from\n    `{rule[1]} implies {rule[0].strip()}`"
+                        f"\n\"{verbalize_atom(target)}\" follows from\n    "
+                        f"\"{describe_rule((rule[0].strip(), rule[1]))}\""
                     )
                     legend = self.describe_rule_variables(rule, target)
                     if legend:
